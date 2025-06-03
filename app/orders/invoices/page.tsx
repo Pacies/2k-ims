@@ -9,10 +9,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Search, RefreshCw, Eye, Check, X, MoreHorizontal, Trash2, AlertTriangle, AlertCircle } from "lucide-react"
+import {
+  Search,
+  RefreshCw,
+  Eye,
+  Check,
+  X,
+  MoreHorizontal,
+  Trash2,
+  AlertTriangle,
+  AlertCircle,
+  ArrowLeft,
+} from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import PageHeader from "@/components/page-header"
 import MainLayout from "@/components/main-layout"
+import { useRouter } from "next/navigation"
 import {
   getInvoices,
   updateInvoiceStatus,
@@ -47,6 +59,7 @@ export default function InvoicesPage() {
   >([])
   const [showStockAlert, setShowStockAlert] = useState(false)
   const { toast } = useToast()
+  const router = useRouter()
 
   const loadInvoices = useCallback(async () => {
     setIsLoading(true)
@@ -293,7 +306,13 @@ export default function InvoicesPage() {
     <MainLayout>
       <div className="space-y-6">
         <PageHeader title="Invoices">
-          <span className="text-muted-foreground text-base">Manage and track your invoices</span>
+          <div className="flex items-center gap-4">
+            <Button variant="outline" onClick={() => router.push("/orders")}>
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Orders
+            </Button>
+            <span className="text-muted-foreground text-base">Manage and track your invoices</span>
+          </div>
         </PageHeader>
 
         {/* Insufficient Stock Alert */}
@@ -539,9 +558,9 @@ export default function InvoicesPage() {
                     <p>
                       <strong>Delivery Date:</strong> {formatDate(selectedInvoice.dueDate)}
                     </p>
-                    <p>
+                    <div className="flex items-center gap-2">
                       <strong>Status:</strong> {getStatusBadge(selectedInvoice.status)}
-                    </p>
+                    </div>
                   </div>
                   <div>
                     <h3 className="font-semibold">Summary</h3>
