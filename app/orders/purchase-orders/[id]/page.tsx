@@ -24,6 +24,221 @@ import MainLayout from "@/components/main-layout"
 import EditPurchaseOrderModal from "@/components/edit-purchase-order-modal"
 import { getPurchaseOrderById, deletePurchaseOrder, type PurchaseOrder } from "@/lib/purchase-orders-utils"
 import { addActivity } from "@/lib/activity-store"
+import { jsPDF } from "jspdf"
+
+async function generatePurchaseOrderPDF(purchaseOrder: PurchaseOrder): Promise<Blob> {
+  try {
+    const doc = new jsPDF()
+
+    // Set up document
+    doc.setFont("helvetica")
+    doc.setDrawColor(0, 0, 0)
+
+    // Add header with optimized spacing
+    doc.setFontSize(16)
+    doc.setFont("helvetica", "bold")
+    doc.text("2K INVENTORY MANAGEMENT SYSTEM", 105, 20, { align: "center" })
+
+    doc.setFontSize(14)
+    doc.text("PURCHASE ORDER", 105, 30, { align: "center" })
+
+    // Add PO info section with reduced spacing
+    doc.setFontSize(12)
+    doc.setFont("helvetica", "normal")
+    doc.text(`PO Number: ${purchaseOrder.po_number}`, 20, 45)
+    doc.text(`Supplier: ${purchaseOrder.supplier}`, 20, 52)
+    doc.text(`Order Date: ${new Date(purchaseOrder.order_date).toLocaleDateString()}`, 20, 59)
+    doc.text(`Status: ${purchaseOrder.status.toUpperCase()}`, 20, 66)
+    doc.text(`Created by: ${purchaseOrder.created_by || "System"}`, 120, 45)
+    doc.text(`Created: ${new Date(purchaseOrder.created_at).toLocaleDateString()}`, 120, 52)
+
+    if (purchaseOrder.expected_delivery_date) {
+      doc.text(`Expected Delivery: ${new Date(purchaseOrder.expected_delivery_date).toLocaleDateString()}`, 120, 59)
+    }
+
+    // Add horizontal line with reduced spacing
+    doc.setLineWidth(0.5)
+    doc.line(20, 75, 190, 75)
+
+    let yPosition = 85
+
+    // Items table with FIXED TEXT POSITIONING
+    doc.setFontSize(12)
+    doc.setFont("helvetica", "bold")
+    doc.text("Order Items", 20, yPosition)
+    yPosition += 10
+
+    const headers = ["Material Name", "Quantity", "Unit Price", "Total Price"]
+    const widths = [60, 30, 40, 40]
+    const tableWidth = widths.reduce((sum, width) => sum + width, 0)
+    const tableStartX = 20
+    const rowHeight = 8
+
+    // Calculate table dimensions
+    const tableStartY = yPosition + 4
+
+    // DRAW TOP BORDER FIRST
+    doc.line(tableStartX, tableStartY, tableStartX + tableWidth, tableStartY)
+
+    // Draw table headers with proper positioning
+    let xPosition = tableStartX
+    doc.setFontSize(10)
+    for (let i = 0; i < headers.length; i++) {
+      // Center text horizontally and vertically within cell
+      const textWidth = (doc.getStringUnitWidth(headers[i]) * doc.getFontSize()) / doc.internal.scaleFactor
+      const textX = xPosition + (widths[i] - textWidth) / 2
+      doc.text(headers[i], textX, tableStartY + 4) // Position text 4 units below the top border
+      xPosition += widths[i]
+    }
+
+    // Draw header bottom line
+    const headerBottomY = tableStartY + rowHeight
+    doc.line(tableStartX, headerBottomY, tableStartX + tableWidth, headerBottomY)
+
+    // Add items data with FIXED POSITIONING
+    doc.setFont("helvetica", "normal")
+    let currentY = headerBottomY
+
+    for (let i = 0; i < purchaseOrder.items.length; i++) {
+      const item = purchaseOrder.items[i]
+      currentY += rowHeight
+
+      if (currentY > 270) {
+        doc.addPage()
+        currentY = 20
+      }
+
+      xPosition = tableStartX
+
+      // Material Name - left aligned with padding
+      doc.text(item.material_name.substring(0, 25), xPosition + 2, currentY - rowHeight / 2 + 2)
+      xPosition += widths[0]
+
+      // Quantity - centered
+      const qtyText = item.quantity.toString()
+      const qtyWidth = (doc.getStringUnitWidth(qtyText) * doc.getFontSize()) / doc.internal.scaleFactor
+      doc.text(qtyText, xPosition + (widths[1] - qtyWidth) / 2, currentY - rowHeight / 2 + 2)
+      xPosition += widths[1]
+
+      // Unit Price - right aligned with padding
+      const priceText = `PHP ${item.unit_price.toFixed(2)}`
+      const priceWidth = (doc.getStringUnitWidth(priceText) * doc.getFontSize()) / doc.internal.scaleFactor
+      doc.text(priceText, xPosition + widths[2] - priceWidth - 2, currentY - rowHeight / 2 + 2)
+      xPosition += widths[2]
+
+      // Total Price - right aligned with padding
+      const totalText = `PHP ${item.total_price.toFixed(2)}`
+      const totalWidth = (doc.getStringUnitWidth(totalText) * doc.getFontSize()) / doc.internal.scaleFactor
+      doc.text(totalText, xPosition + widths[3] - totalWidth - 2, currentY - rowHeight / 2 + 2)
+
+      // Draw horizontal line after each row
+      doc.line(tableStartX, currentY, tableStartX + tableWidth, currentY)
+    }
+
+    // Draw ALL vertical lines for complete grid
+    xPosition = tableStartX
+    for (let i = 0; i <= headers.length; i++) {
+      doc.line(xPosition, tableStartY, xPosition, currentY)
+      if (i < headers.length) {
+        xPosition += widths[i]
+      }
+    }
+
+    yPosition = currentY + 15
+
+    // Payment summary section
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(12)
+    doc.text("Payment Summary", 20, yPosition)
+    yPosition += 10
+
+    // Payment summary table
+    const summaryStartY = yPosition
+    const summaryWidth = 80
+    const summaryStartX = 110
+    const summaryRowHeight = 6
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(10)
+
+    // Summary items
+    const summaryItems = [
+      { label: "Subtotal:", value: `PHP ${purchaseOrder.subtotal.toFixed(2)}` },
+      {
+        label: `Tax (${(purchaseOrder.tax_rate * 100).toFixed(0)}%):`,
+        value: `PHP ${purchaseOrder.tax_amount.toFixed(2)}`,
+      },
+      { label: "Shipping:", value: `PHP ${purchaseOrder.shipping_cost.toFixed(2)}` },
+    ]
+
+    if (purchaseOrder.discount_amount > 0) {
+      summaryItems.push({
+        label: "Discount:",
+        value: `-PHP ${purchaseOrder.discount_amount.toFixed(2)}`,
+      })
+    }
+
+    let summaryY = summaryStartY
+    for (const item of summaryItems) {
+      doc.text(item.label, summaryStartX, summaryY)
+      const valueWidth = (doc.getStringUnitWidth(item.value) * doc.getFontSize()) / doc.internal.scaleFactor
+      doc.text(item.value, summaryStartX + summaryWidth - valueWidth, summaryY)
+      summaryY += summaryRowHeight
+    }
+
+    // Total line
+    summaryY += 3
+    doc.line(summaryStartX, summaryY, summaryStartX + summaryWidth, summaryY)
+    summaryY += 6
+
+    doc.setFont("helvetica", "bold")
+    doc.text("TOTAL:", summaryStartX, summaryY)
+    const totalValue = `PHP ${purchaseOrder.total_amount.toFixed(2)}`
+    const totalWidth = (doc.getStringUnitWidth(totalValue) * doc.getFontSize()) / doc.internal.scaleFactor
+    doc.text(totalValue, summaryStartX + summaryWidth - totalWidth, summaryY)
+
+    // Add notes section if available
+    if (purchaseOrder.notes && purchaseOrder.notes.trim()) {
+      yPosition = summaryY + 20
+      if (yPosition > 250) {
+        doc.addPage()
+        yPosition = 20
+      }
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(12)
+      doc.text("Notes:", 20, yPosition)
+      yPosition += 8
+
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(10)
+
+      // Split notes into lines that fit within the page width
+      const noteLines = doc.splitTextToSize(purchaseOrder.notes, 170)
+      for (const line of noteLines) {
+        if (yPosition > 270) {
+          doc.addPage()
+          yPosition = 20
+        }
+        doc.text(line, 20, yPosition)
+        yPosition += 5
+      }
+    }
+
+    // Add footer
+    doc.setFontSize(8)
+    doc.setFont("helvetica", "normal")
+    doc.text("Generated by 2K Inventory Management System", 105, 285, { align: "center" })
+    doc.text(`Generated on: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, 105, 290, {
+      align: "center",
+    })
+
+    return new Blob([doc.output("blob")], { type: "application/pdf" })
+  } catch (error) {
+    console.error("Error generating PDF:", error)
+    throw error
+  }
+}
 
 export default function PurchaseOrderDetailPage() {
   const params = useParams()
@@ -32,6 +247,7 @@ export default function PurchaseOrderDetailPage() {
   const [purchaseOrder, setPurchaseOrder] = useState<PurchaseOrder | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [editingOrder, setEditingOrder] = useState<PurchaseOrder | null>(null)
+  const [isExporting, setIsExporting] = useState(false)
 
   const orderId = params.id as string
 
@@ -83,13 +299,43 @@ export default function PurchaseOrderDetailPage() {
     setEditingOrder(null)
   }
 
-  const handleExportPDF = () => {
-    if (purchaseOrder) {
-      addActivity(`Exported purchase order ${purchaseOrder.po_number} as PDF`)
+  const handleExportPDF = async () => {
+    if (!purchaseOrder) return
+
+    setIsExporting(true)
+    try {
       toast({
-        title: "Exporting PDF",
-        description: `Purchase order ${purchaseOrder.po_number} is being exported as PDF...`,
+        title: "Generating PDF",
+        description: `Purchase order ${purchaseOrder.po_number} is being exported...`,
       })
+
+      const pdfBlob = await generatePurchaseOrderPDF(purchaseOrder)
+
+      // Create download link
+      const url = URL.createObjectURL(pdfBlob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `PO-${purchaseOrder.po_number}-${new Date().toISOString().split("T")[0]}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      addActivity(`Exported purchase order ${purchaseOrder.po_number} as PDF`)
+
+      toast({
+        title: "PDF Downloaded",
+        description: `Purchase order ${purchaseOrder.po_number} has been downloaded successfully.`,
+      })
+    } catch (error) {
+      console.error("Error exporting PDF:", error)
+      toast({
+        title: "Export Failed",
+        description: "Failed to export PDF. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsExporting(false)
     }
   }
 
@@ -172,9 +418,13 @@ export default function PurchaseOrderDetailPage() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button onClick={handleExportPDF} className="bg-red-600 hover:bg-red-700">
+                <Button
+                  onClick={handleExportPDF}
+                  disabled={isExporting}
+                  className="bg-red-600 hover:bg-red-700 disabled:opacity-50"
+                >
                   <Download className="h-4 w-4 mr-2" />
-                  Export PDF
+                  {isExporting ? "Generating..." : "Export PDF"}
                 </Button>
                 <Button variant="outline" onClick={() => setEditingOrder(purchaseOrder)}>
                   <Edit className="h-4 w-4 mr-2" />

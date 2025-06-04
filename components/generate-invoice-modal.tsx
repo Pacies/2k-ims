@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { FileText, Plus, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { getInventoryItems, type InventoryItem } from "@/lib/database"
-import { createInvoice, calculateInvoiceTotals, type InvoiceItem, type Invoice } from "@/lib/invoice-utils"
+import { calculateInvoiceTotals, type InvoiceItem, type Invoice } from "@/lib/invoice-utils"
 
 interface GenerateInvoiceModalProps {
   onInvoiceCreated: (invoice: Invoice) => void
@@ -20,11 +20,6 @@ export default function GenerateInvoiceModal({ onInvoiceCreated }: GenerateInvoi
   const [isOpen, setIsOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
-
-  // Add debug logging
-  useEffect(() => {
-    console.log("Generate Invoice Modal - isOpen:", isOpen)
-  }, [isOpen])
 
   // Invoice Information
   const [customerName, setCustomerName] = useState("")
@@ -138,6 +133,8 @@ export default function GenerateInvoiceModal({ onInvoiceCreated }: GenerateInvoi
   }
 
   const handleSave = async () => {
+    console.log("=== Starting invoice save process ===")
+
     // Validation
     if (!customerName.trim()) {
       toast({
@@ -178,25 +175,40 @@ export default function GenerateInvoiceModal({ onInvoiceCreated }: GenerateInvoi
     setIsLoading(true)
 
     try {
+      console.log("Validation passed, calculating totals...")
+
       const { subtotal, taxAmount, totalAmount } = calculateInvoiceTotals(selectedItems, 12) // 12% VAT
 
       const invoiceData = {
         customerName: customerName.trim(),
-        customerEmail: "", // Not required in simplified version
-        customerAddress: "", // Not required in simplified version
-        customerPhone: "", // Not required in simplified version
         items: selectedItems,
         subtotal,
         taxRate: 12,
         taxAmount,
         totalAmount,
-        status: "pending" as const,
         issueDate: new Date(invoiceDate).toISOString(),
         dueDate: new Date(deliveryDate).toISOString(),
         notes: "",
       }
 
-      const newInvoice = await createInvoice(invoiceData)
+      console.log("Creating invoice with data:", invoiceData)
+
+      const response = await fetch("/api/invoices", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(invoiceData),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Failed to create invoice")
+      }
+
+      const newInvoice = await response.json()
+
+      console.log("Invoice created successfully:", newInvoice)
 
       toast({
         title: "Invoice Created",
@@ -210,7 +222,7 @@ export default function GenerateInvoiceModal({ onInvoiceCreated }: GenerateInvoi
       console.error("Error creating invoice:", error)
       toast({
         title: "Error",
-        description: "Failed to create invoice. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to create invoice. Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -221,21 +233,9 @@ export default function GenerateInvoiceModal({ onInvoiceCreated }: GenerateInvoi
   const selectedProduct = availableProducts.find((p) => p.id.toString() === selectedProductId)
 
   return (
-    <Dialog
-      open={isOpen}
-      onOpenChange={(open) => {
-        console.log("Dialog onOpenChange:", open)
-        setIsOpen(open)
-      }}
-    >
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button
-          className="bg-green-600 hover:bg-green-700"
-          onClick={() => {
-            console.log("Generate Invoice button clicked")
-            setIsOpen(true)
-          }}
-        >
+        <Button className="bg-green-600 hover:bg-green-700">
           <FileText className="h-4 w-4 mr-2" />
           Generate Invoice
         </Button>
