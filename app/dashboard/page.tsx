@@ -298,7 +298,6 @@ export default function Dashboard() {
           <Tabs defaultValue="activity" className="space-y-4">
             <TabsList>
               <TabsTrigger value="activity">Recent Activity</TabsTrigger>
-              <TabsTrigger value="inventory">Inventory Overview</TabsTrigger>
             </TabsList>
 
             <TabsContent value="activity" className="space-y-4">
@@ -313,80 +312,6 @@ export default function Dashboard() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="inventory" className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Top Products</CardTitle>
-                    <CardDescription>Products with highest stock quantity</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {inventoryItems
-                        .sort((a, b) => b.stock - a.stock)
-                        .slice(0, 5)
-                        .map((item) => (
-                          <div key={item.id} className="flex items-center justify-between p-4 border rounded-lg">
-                            <div>
-                              <p className="font-medium">{item.name}</p>
-                              <p className="text-sm text-muted-foreground">{item.sku}</p>
-                            </div>
-                            <div className="text-right">
-                              <p className="font-medium">{item.stock} units</p>
-                              <Badge
-                                variant={
-                                  item.status === "in-stock"
-                                    ? "default"
-                                    : item.status === "low-stock"
-                                      ? "secondary"
-                                      : "destructive"
-                                }
-                              >
-                                {item.status}
-                              </Badge>
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Raw Materials Status</CardTitle>
-                    <CardDescription>Current raw materials inventory</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {rawMaterials.slice(0, 5).map((material) => (
-                        <div key={material.id} className="flex items-center justify-between p-4 border rounded-lg">
-                          <div>
-                            <p className="font-medium">{material.name}</p>
-                            <p className="text-sm text-muted-foreground">{material.sku}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-medium">
-                              {material.quantity} {material.unit}
-                            </p>
-                            <Badge
-                              variant={
-                                material.status === "in-stock"
-                                  ? "default"
-                                  : material.status === "low-stock"
-                                    ? "secondary"
-                                    : "destructive"
-                              }
-                            >
-                              {material.status}
-                            </Badge>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            </TabsContent>
           </Tabs>
         </div>
       </div>

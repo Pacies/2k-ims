@@ -43,6 +43,10 @@ export default function ProductInventoryPage() {
   const toastApi = useToast()
   const [isUserAdmin, setIsUserAdmin] = useState(false)
 
+  const [showQuantityModal, setShowQuantityModal] = useState(false);
+  const [scannedProductForQuantity, setScannedProductForQuantity] = useState<InventoryItem | null>(null);
+  const [enteredQuantity, setEnteredQuantity] = useState<string>("1");
+
   const loadInventoryItems = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -178,60 +182,92 @@ export default function ProductInventoryPage() {
   }
 
   const handleBarcodeScanned = async (result: { text: string; format: string } | null) => {
-    if (!result || isProcessingBarcode) return
-    setIsProcessingBarcode(true)
-    try {
-      const barcode = result.text
-      const type = result.format
-      let parsed: any = null
-      try {
-        parsed = JSON.parse(barcode)
-      } catch (e) {}
+    if (!result || isProcessingBarcode) return;
+    setIsProcessingBarcode(true);
+    setShowBarcodeScanner(false); // Close scanner immediately
 
-      let product: InventoryItem | undefined
+    try {
+      const barcode = result.text;
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(barcode);
+      } catch (e) {
+        // Not a JSON QR code, might be a direct SKU
+      }
+
+      let productToProcess: InventoryItem | undefined | null = null;
 
       if (parsed?.type === "item_update" && parsed.itemId) {
-        product = inventoryItems.find(
+        productToProcess = inventoryItems.find(
           (item) => item.id.toString() === parsed.itemId.toString() || item.sku.toString() === parsed.itemId.toString(),
-        )
-      } else {
-        product = inventoryItems.find(
-          (item) => item.sku.toString() === barcode.toString() || item.id.toString() === barcode.toString(),
-        )
-      }
-
-      if (product) {
-        const updatedItem = await updateInventoryItem(product.id, { stock: product.stock + 1 })
-        if (updatedItem) {
-          toastApi.toast({
-            title: "Stock Incremented",
-            description: `Stock for ${product.name} incremented to ${updatedItem.stock}`,
-          })
-          // Update the specific item in the state instead of reloading everything
-          setInventoryItems((prev) =>
-            prev.map((item) => (item.id === product!.id ? { ...item, stock: updatedItem.stock } : item)),
-          )
-        } else {
-          toastApi.toast({
-            title: "Error",
-            description: "Failed to update product stock.",
-            variant: "destructive",
-          })
+        );
+        if (!productToProcess) {
+          toastApi.toast({ title: "Not Found", description: "QR code data does not match any known product.", variant: "destructive" });
         }
       } else {
-        window.alert(
-          parsed ? "QR code does not match any product." : "Product Not Found. Would you like to add this product?",
-        )
+        productToProcess = inventoryItems.find(
+          (item) => item.sku.toString() === barcode.toString() || item.id.toString() === barcode.toString(),
+        );
+        if (!productToProcess && parsed) { // If it was parsed but not item_update type
+             toastApi.toast({ title: "Invalid QR", description: "Scanned QR code is not for a product update.", variant: "destructive" });
+        } else if (!productToProcess) {
+             toastApi.toast({ title: "Not Found", description: "Scanned barcode does not match any product SKU or ID.", variant: "destructive" });
+        }
       }
 
-      setShowBarcodeScanner(false)
+      if (productToProcess) {
+        setScannedProductForQuantity(productToProcess);
+        setEnteredQuantity("1"); 
+        setShowQuantityModal(true);
+      }
     } catch (error) {
-      console.error("Error processing barcode scan:", error)
-      window.alert("Error: Failed to process barcode scan")
+      console.error("Error processing barcode scan:", error);
+      toastApi.toast({ title: "Scan Error", description: "Error: Failed to process barcode scan.", variant: "destructive" });
     } finally {
-      setIsProcessingBarcode(false)
+      setIsProcessingBarcode(false);
     }
-  }
+  };
+
+  const handleQuantitySubmit = async () => {
+    if (!scannedProductForQuantity || !enteredQuantity) return;
+
+    const quantityToAdd = Number(enteredQuantity);
+    if (isNaN(quantityToAdd) || quantityToAdd <= 0) {
+      toastApi.toast({
+        title: "Invalid Quantity",
+        description: "Please enter a valid positive number for the quantity.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsProcessingBarcode(true);
+    try {
+      const updatedItem = await updateInventoryItem(scannedProductForQuantity.id, {
+        stock: scannedProductForQuantity.stock + quantityToAdd,
+      });
+
+      if (updatedItem) {
+        toastApi.toast({
+          title: "Stock Updated",
+          description: `Stock for ${scannedProductForQuantity.name} updated to ${updatedItem.stock}.`,
+        });
+        setInventoryItems((prev) =>
+          prev.map((item) => (item.id === scannedProductForQuantity!.id ? { ...item, stock: updatedItem.stock } : item)),
+        );
+      } else {
+        toastApi.toast({ title: "Update Error", description: "Failed to update product stock.", variant: "destructive" });
+      }
+    } catch (error) {
+      console.error("Error updating stock:", error);
+      toastApi.toast({ title: "Update Error", description: "An error occurred while updating stock.", variant: "destructive" });
+    } finally {
+      setShowQuantityModal(false);
+      setScannedProductForQuantity(null);
+      setEnteredQuantity("1");
+      setIsProcessingBarcode(false);
+    }
+  };
 
   if (isLoading && inventoryItems.length === 0) {
     return (
@@ -457,6 +493,57 @@ export default function ProductInventoryPage() {
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Quantity Input Modal */}
+        {scannedProductForQuantity && (
+          <Dialog open={showQuantityModal} onOpenChange={(isOpen) => {
+            if (!isOpen) {
+              setShowQuantityModal(false);
+              setScannedProductForQuantity(null);
+              setEnteredQuantity("1");
+            } else {
+              setShowQuantityModal(true);
+            }
+          }}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Enter Quantity for {scannedProductForQuantity.name}</DialogTitle>
+              </DialogHeader>
+              <div className="py-4 space-y-2">
+                <p className="text-sm">
+                  Current stock: <span className="font-semibold">{scannedProductForQuantity.stock} units</span>
+                </p>
+                <div>
+                  <label htmlFor="quantityInputProduct" className="block text-sm font-medium mb-1">
+                    Quantity to Add:
+                  </label>
+                  <Input
+                    id="quantityInputProduct"
+                    type="number"
+                    value={enteredQuantity}
+                    onChange={(e) => setEnteredQuantity(e.target.value)}
+                    placeholder="e.g., 10"
+                    min="1"
+                    className="w-full"
+                    autoFocus
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <Button variant="outline" onClick={() => {
+                  setShowQuantityModal(false);
+                  setScannedProductForQuantity(null);
+                  setEnteredQuantity("1");
+                }} disabled={isProcessingBarcode}>
+                  Cancel
+                </Button>
+                <Button onClick={handleQuantitySubmit} disabled={isProcessingBarcode || !enteredQuantity || Number(enteredQuantity) <= 0}>
+                  {isProcessingBarcode ? "Adding..." : "Add Quantity"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
     </MainLayout>
   )

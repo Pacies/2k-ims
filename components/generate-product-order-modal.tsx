@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getRawMaterials, getInventoryItems, type RawMaterial, type InventoryItem } from "@/lib/database"
+import { getRawMaterials, getFixedPrices, type RawMaterial, type FixedPrice } from "@/lib/database"
 import { createProductOrder } from "@/lib/orders-utils"
 import { useToast } from "@/hooks/use-toast"
 import { Loader2, X } from "lucide-react"
@@ -20,7 +20,7 @@ interface GenerateProductOrderModalProps {
 
 export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCreated }: GenerateProductOrderModalProps) {
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([])
-  const [products, setProducts] = useState<InventoryItem[]>([])
+  const [products, setProducts] = useState<FixedPrice[]>([])
   const [selectedMaterials, setSelectedMaterials] = useState<
     Array<{ materialId: number; name: string; quantity: number; available: number; unit: string }>
   >([])
@@ -35,7 +35,7 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
       setIsLoading(true)
       try {
         const materialsData = await getRawMaterials()
-        const productsData = await getInventoryItems()
+        const productsData = await getFixedPrices("product")
         setRawMaterials(materialsData)
         setProducts(productsData)
       } catch (error) {
@@ -148,7 +148,7 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
 
       const orderData = {
         productId: product.id,
-        productName: product.name,
+        productName: product.item_name,
         quantity: quantity,
         materials: selectedMaterials.map((m) => ({
           materialId: m.materialId,
@@ -284,7 +284,7 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
                   <SelectContent>
                     {products.map((product) => (
                       <SelectItem key={product.id} value={product.id.toString()}>
-                        {product.name}
+                        {product.item_name} - ${product.price}
                       </SelectItem>
                     ))}
                   </SelectContent>

@@ -616,15 +616,59 @@ export async function updateRawMaterial(id: number, updates: Partial<RawMaterial
 
 export async function deleteRawMaterial(id: number): Promise<boolean> {
   try {
-    const { error } = await supabase!.from("raw_materials").delete().eq("id", id)
-    if (error) {
-      console.error("Error deleting raw material:", error)
+    // First, check if there are any purchase order items referencing this raw material
+    const { data: referencingItems, error: checkError } = await supabase!
+      .from("purchase_order_items")
+      .select("id, po_id")
+      .eq("raw_material_id", id)
+
+    if (checkError) {
+      console.error("Error checking purchase order item references:", checkError)
       return false
     }
-    await logActivity("delete", `Deleted raw material with ID: ${id}`)
+
+    // If there are referencing items, delete them first
+    if (referencingItems && referencingItems.length > 0) {
+      console.log(
+        `Found ${referencingItems.length} purchase order items referencing raw material ${id}. Deleting them first.`,
+      )
+
+      const { error: deleteItemsError } = await supabase!
+        .from("purchase_order_items")
+        .delete()
+        .eq("raw_material_id", id)
+
+      if (deleteItemsError) {
+        console.error("Error deleting purchase order items:", deleteItemsError)
+        return false
+      }
+
+      console.log(`Successfully deleted ${referencingItems.length} purchase order items.`)
+    }
+
+    // Also check and delete any references from product_raw_materials table (if it exists)
+    const { error: deleteProductRefsError } = await supabase!
+      .from("product_raw_materials")
+      .delete()
+      .eq("raw_material_id", id)
+
+    if (deleteProductRefsError) {
+      // Log this as a warning since this table might not exist or might not have references
+      console.warn("Warning during attempt to delete references from 'product_raw_materials':", deleteProductRefsError)
+    }
+
+    // Now attempt to delete the raw material itself
+    const { error: deleteRawMaterialError } = await supabase!.from("raw_materials").delete().eq("id", id)
+
+    if (deleteRawMaterialError) {
+      console.error("Error deleting raw material from 'raw_materials' table:", deleteRawMaterialError)
+      return false
+    }
+
+    await logActivity("delete", `Deleted raw material with ID: ${id} and all associated references`)
     return true
   } catch (error: any) {
-    console.error("Unexpected error deleting raw material:", error)
+    console.error("Unexpected error in deleteRawMaterial function:", error)
     return false
   }
 }
