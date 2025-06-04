@@ -68,9 +68,22 @@ export interface Activity {
   created_at: string
 }
 
+export interface ProductRecipe {
+  id: number
+  product_id: number
+  product_name: string
+  raw_material_id: number
+  raw_material_name: string
+  quantity_required: number
+  unit: string
+  created_at: string
+  updated_at: string
+}
+
 // Helper function to get supplier based on category
 export function getSupplierByCategory(category: string): string {
-  switch (category.toLowerCase()) {
+  const normalizedCategory = category.toLowerCase()
+  switch (normalizedCategory) {
     case "fabric":
       return "A&B Textile"
     case "sewing":
@@ -180,41 +193,7 @@ export async function authenticateUser(username: string, password: string): Prom
     // Test connection first
     const connectionOk = await testSupabaseConnection()
     if (!connectionOk) {
-      console.warn("Supabase connection failed, trying fallback authentication...")
-
-      // Fallback authentication for demo purposes
-      // In production, you'd want to handle this differently
-      if (username === "admin" && password === "admin123") {
-        const fallbackUser: User = {
-          id: "fallback-admin",
-          username: "admin",
-          email: "admin@example.com",
-          user_type: "admin",
-          status: "active",
-          created_at: new Date().toISOString(),
-        }
-
-        console.log("Fallback authentication successful for admin user")
-        await logActivity("login", `User ${fallbackUser.username} logged in (fallback mode)`)
-        return fallbackUser
-      }
-
-      if (username === "staff" && password === "staff123") {
-        const fallbackUser: User = {
-          id: "fallback-staff",
-          username: "staff",
-          email: "staff@example.com",
-          user_type: "staff",
-          status: "active",
-          created_at: new Date().toISOString(),
-        }
-
-        console.log("Fallback authentication successful for staff user")
-        await logActivity("login", `User ${fallbackUser.username} logged in (fallback mode)`)
-        return fallbackUser
-      }
-
-      console.error("Fallback authentication failed - invalid credentials")
+      console.warn("Supabase connection failed - unable to authenticate")
       return null
     }
 
@@ -301,6 +280,123 @@ export async function authenticateUser(username: string, password: string): Prom
   } catch (error) {
     console.error("Authentication error:", error)
     return null
+  }
+}
+
+// Database operations for product recipes
+export async function getProductRecipes(productId?: number): Promise<ProductRecipe[]> {
+  try {
+    console.log("Fetching product recipes for product ID:", productId)
+
+    if (!supabase) {
+      console.error("Supabase client not initialized")
+      return []
+    }
+
+    let query = supabase.from("product_recipes").select("*")
+
+    if (productId) {
+      // Try to find recipes by product_id first
+      query = query.eq("product_id", productId)
+    }
+
+    const { data, error } = await query.order("product_name", { ascending: true })
+
+    if (error) {
+      console.error("Error fetching product recipes:", error)
+      return []
+    }
+
+    console.log("Product recipes found:", data?.length || 0)
+    console.log("Recipe data:", data)
+
+    return data || []
+  } catch (error: any) {
+    console.error("Unexpected error fetching product recipes:", error)
+    return []
+  }
+}
+
+export async function getProductRecipesByName(productName: string): Promise<ProductRecipe[]> {
+  try {
+    console.log("Fetching product recipes for product name:", productName)
+
+    if (!supabase) {
+      console.error("Supabase client not initialized")
+      return []
+    }
+
+    const { data, error } = await supabase
+      .from("product_recipes")
+      .select("*")
+      .ilike("product_name", `%${productName}%`)
+      .order("product_name", { ascending: true })
+
+    if (error) {
+      console.error("Error fetching product recipes by name:", error)
+      return []
+    }
+
+    console.log("Product recipes found by name:", data?.length || 0)
+    console.log("Recipe data:", data)
+
+    return data || []
+  } catch (error: any) {
+    console.error("Unexpected error fetching product recipes by name:", error)
+    return []
+  }
+}
+
+export async function addProductRecipe(
+  recipeData: Omit<ProductRecipe, "id" | "created_at" | "updated_at">,
+): Promise<ProductRecipe | null> {
+  try {
+    const { data, error } = await supabase!.from("product_recipes").insert(recipeData).select().single()
+
+    if (error) {
+      console.error("Error adding product recipe:", error)
+      return null
+    }
+
+    await logActivity("create", `Added recipe for ${recipeData.product_name}: ${recipeData.raw_material_name}`)
+    return data
+  } catch (error: any) {
+    console.error("Unexpected error adding product recipe:", error)
+    return null
+  }
+}
+
+export async function updateProductRecipe(id: number, updates: Partial<ProductRecipe>): Promise<ProductRecipe | null> {
+  try {
+    const { data, error } = await supabase!.from("product_recipes").update(updates).eq("id", id).select().single()
+
+    if (error) {
+      console.error("Error updating product recipe:", error)
+      return null
+    }
+
+    await logActivity("update", `Updated product recipe with ID: ${id}`)
+    return data
+  } catch (error: any) {
+    console.error("Unexpected error updating product recipe:", error)
+    return null
+  }
+}
+
+export async function deleteProductRecipe(id: number): Promise<boolean> {
+  try {
+    const { error } = await supabase!.from("product_recipes").delete().eq("id", id)
+
+    if (error) {
+      console.error("Error deleting product recipe:", error)
+      return false
+    }
+
+    await logActivity("delete", `Deleted product recipe with ID: ${id}`)
+    return true
+  } catch (error: any) {
+    console.error("Unexpected error deleting product recipe:", error)
+    return false
   }
 }
 
@@ -544,7 +640,7 @@ export async function addRawMaterial(
     const sku = `RAW-${nextNumber.toString().padStart(4, "0")}`
 
     // Set unit based on category - fabric uses "rolls", sewing uses "pcs"
-    const unit = material.category === "Fabric" ? "rolls" : "pcs"
+    const unit = material.category.toLowerCase() === "fabric" ? "rolls" : "pcs"
     const reorder_level = 20
 
     // Automatically assign supplier based on category
@@ -616,15 +712,59 @@ export async function updateRawMaterial(id: number, updates: Partial<RawMaterial
 
 export async function deleteRawMaterial(id: number): Promise<boolean> {
   try {
-    const { error } = await supabase!.from("raw_materials").delete().eq("id", id)
-    if (error) {
-      console.error("Error deleting raw material:", error)
+    // First, check if there are any purchase order items referencing this raw material
+    const { data: referencingItems, error: checkError } = await supabase!
+      .from("purchase_order_items")
+      .select("id, po_id")
+      .eq("raw_material_id", id)
+
+    if (checkError) {
+      console.error("Error checking purchase order item references:", checkError)
       return false
     }
-    await logActivity("delete", `Deleted raw material with ID: ${id}`)
+
+    // If there are referencing items, delete them first
+    if (referencingItems && referencingItems.length > 0) {
+      console.log(
+        `Found ${referencingItems.length} purchase order items referencing raw material ${id}. Deleting them first.`,
+      )
+
+      const { error: deleteItemsError } = await supabase!
+        .from("purchase_order_items")
+        .delete()
+        .eq("raw_material_id", id)
+
+      if (deleteItemsError) {
+        console.error("Error deleting purchase order items:", deleteItemsError)
+        return false
+      }
+
+      console.log(`Successfully deleted ${referencingItems.length} purchase order items.`)
+    }
+
+    // Also check and delete any references from product_raw_materials table (if it exists)
+    const { error: deleteProductRefsError } = await supabase!
+      .from("product_raw_materials")
+      .delete()
+      .eq("raw_material_id", id)
+
+    if (deleteProductRefsError) {
+      // Log this as a warning since this table might not exist or might not have references
+      console.warn("Warning during attempt to delete references from 'product_raw_materials':", deleteProductRefsError)
+    }
+
+    // Now attempt to delete the raw material itself
+    const { error: deleteRawMaterialError } = await supabase!.from("raw_materials").delete().eq("id", id)
+
+    if (deleteRawMaterialError) {
+      console.error("Error deleting raw material from 'raw_materials' table:", deleteRawMaterialError)
+      return false
+    }
+
+    await logActivity("delete", `Deleted raw material with ID: ${id} and all associated references`)
     return true
   } catch (error: any) {
-    console.error("Unexpected error deleting raw material:", error)
+    console.error("Unexpected error in deleteRawMaterial function:", error)
     return false
   }
 }

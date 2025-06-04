@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient"
-import { getCurrentUser, logActivity, type RawMaterial } from "./database"
+import { getCurrentUser, logActivity } from "./database"
 
 export interface PurchaseOrder {
   id: number
@@ -114,12 +114,14 @@ export async function getPurchaseOrderById(id: number): Promise<PurchaseOrder | 
 // Create new purchase order
 export async function createPurchaseOrder(orderData: CreatePurchaseOrderData): Promise<PurchaseOrder | null> {
   try {
+    console.log("=== Creating Purchase Order ===")
+    console.log("Order data:", orderData)
+
     const user = await getCurrentUser()
 
     // Generate PO number
     let po_number: string
     try {
-      // Get existing PO numbers to generate next number
       const { data: existingPOs, error: fetchError } = await supabase!
         .from("purchase_orders")
         .select("po_number")
@@ -141,9 +143,9 @@ export async function createPurchaseOrder(orderData: CreatePurchaseOrderData): P
       }
 
       po_number = `PO-${nextNumber.toString().padStart(4, "0")}`
+      console.log("Generated PO number:", po_number)
     } catch (error) {
       console.error("Error generating PO number:", error)
-      // Fallback to timestamp-based PO number
       po_number = `PO-${Date.now().toString().slice(-6)}`
     }
 
@@ -156,29 +158,56 @@ export async function createPurchaseOrder(orderData: CreatePurchaseOrderData): P
     const discount_amount = 0
     const total_amount = subtotal + tax_amount + shipping_cost - discount_amount
 
+    console.log("Calculated totals:", { subtotal, tax_amount, shipping_cost, total_amount })
+
     // Create purchase order
+    const orderToInsert = {
+      po_number,
+      supplier: orderData.supplier,
+      expected_delivery_date: orderData.expected_delivery_date,
+      subtotal,
+      tax_rate,
+      tax_amount,
+      shipping_cost,
+      discount_rate,
+      discount_amount,
+      total_amount,
+      notes: orderData.notes,
+      created_by: user?.username || "System",
+    }
+
+    console.log("Creating purchase order with data:", orderToInsert)
+
     const { data: order, error: orderError } = await supabase!
       .from("purchase_orders")
-      .insert({
-        po_number,
-        supplier: orderData.supplier,
-        expected_delivery_date: orderData.expected_delivery_date,
-        subtotal,
-        tax_rate,
-        tax_amount,
-        shipping_cost,
-        discount_rate,
-        discount_amount,
-        total_amount,
-        notes: orderData.notes,
-        created_by: user?.username || "System",
-      })
+      .insert(orderToInsert)
       .select()
       .single()
 
     if (orderError) {
       console.error("Error creating purchase order:", orderError)
       return null
+    }
+
+    console.log("Purchase order created successfully:", order)
+
+    // Validate all material IDs exist before creating items
+    console.log("Validating material IDs...")
+    for (const item of orderData.items) {
+      const { data: material, error: materialError } = await supabase!
+        .from("raw_materials")
+        .select("id, name")
+        .eq("id", item.raw_material_id)
+        .single()
+
+      if (materialError || !material) {
+        console.error(`Material with ID ${item.raw_material_id} not found:`, materialError)
+        // Rollback order creation
+        await supabase!.from("purchase_orders").delete().eq("id", order.id)
+        return null
+      }
+
+      console.log(`Material ID ${item.raw_material_id} validated:`, material)
     }
 
     // Create purchase order items
@@ -190,6 +219,8 @@ export async function createPurchaseOrder(orderData: CreatePurchaseOrderData): P
       unit_price: item.unit_price,
       total_price: item.quantity * item.unit_price,
     }))
+
+    console.log("Items to insert:", itemsToInsert)
 
     const { data: items, error: itemsError } = await supabase!
       .from("purchase_order_items")
@@ -203,8 +234,11 @@ export async function createPurchaseOrder(orderData: CreatePurchaseOrderData): P
       return null
     }
 
+    console.log("Items created successfully:", items)
+
     await logActivity("create", `Created purchase order ${po_number} for ${orderData.supplier}`)
 
+    console.log("=== Purchase Order Creation Complete ===")
     return { ...order, items: items || [] }
   } catch (error) {
     console.error("Unexpected error creating purchase order:", error)
@@ -263,77 +297,5 @@ export async function deletePurchaseOrder(id: number): Promise<boolean> {
   } catch (error) {
     console.error("Unexpected error deleting purchase order:", error)
     return false
-  }
-}
-
-// Generate purchase orders for low stock items
-export async function generatePurchaseOrdersForLowStock(rawMaterials: RawMaterial[]): Promise<PurchaseOrder[]> {
-  try {
-    const lowStockItems = rawMaterials.filter((item) => item.status === "low-stock" || item.status === "out-of-stock")
-
-    if (lowStockItems.length === 0) {
-      return []
-    }
-
-    // Group by supplier
-    const itemsBySupplier = lowStockItems.reduce(
-      (acc, item) => {
-        const supplier = item.supplier || "Unknown Supplier"
-        if (!acc[supplier]) {
-          acc[supplier] = []
-        }
-        acc[supplier].push(item)
-        return acc
-      },
-      {} as Record<string, RawMaterial[]>,
-    )
-
-    const createdOrders: PurchaseOrder[] = []
-
-    // Create PO for each supplier
-    for (const [supplier, items] of Object.entries(itemsBySupplier)) {
-      // Check if there's already a pending PO for this supplier
-      const { data: existingPO } = await supabase!
-        .from("purchase_orders")
-        .select("id")
-        .eq("supplier", supplier)
-        .eq("status", "pending")
-        .limit(1)
-
-      if (existingPO && existingPO.length > 0) {
-        console.log(`Skipping PO creation for ${supplier} - pending PO already exists`)
-        continue
-      }
-
-      const orderItems = items.map((item) => {
-        // Calculate quantity needed (reorder level * 2 - current quantity)
-        const reorderLevel = item.reorder_level || 20
-        const currentQuantity = item.quantity || 0
-        const quantityNeeded = Math.max(reorderLevel * 2 - currentQuantity, reorderLevel)
-
-        return {
-          raw_material_id: item.id,
-          material_name: item.name,
-          quantity: quantityNeeded,
-          unit_price: item.cost_per_unit,
-        }
-      })
-
-      const orderData: CreatePurchaseOrderData = {
-        supplier,
-        notes: `Auto-generated PO for low stock items. Generated on ${new Date().toLocaleDateString()}.`,
-        items: orderItems,
-      }
-
-      const createdOrder = await createPurchaseOrder(orderData)
-      if (createdOrder) {
-        createdOrders.push(createdOrder)
-      }
-    }
-
-    return createdOrders
-  } catch (error) {
-    console.error("Error generating purchase orders for low stock:", error)
-    return []
   }
 }
