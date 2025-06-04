@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS product_orders (
   quantity INTEGER NOT NULL,
   status VARCHAR(50) DEFAULT 'pending',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  completed_at TIMESTAMP WITH TIME ZONE
 );
 
 -- Create product_order_materials table
@@ -34,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_product_orders_status ON product_orders(status);
 CREATE INDEX IF NOT EXISTS idx_product_orders_created_at ON product_orders(created_at);
 CREATE INDEX IF NOT EXISTS idx_product_order_materials_order_id ON product_order_materials(product_order_id);
 CREATE INDEX IF NOT EXISTS idx_product_order_materials_material_id ON product_order_materials(material_id);
+CREATE INDEX IF NOT EXISTS idx_product_order_history_completed_at ON product_order_history(completed_at);
 
 -- Enable RLS (Row Level Security)
 ALTER TABLE product_orders ENABLE ROW LEVEL SECURITY;

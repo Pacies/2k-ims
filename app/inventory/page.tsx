@@ -37,6 +37,10 @@ export default function RawMaterialInventoryPage() {
   const { toast } = useToast()
   const [isUserAdmin, setIsUserAdmin] = useState(false)
 
+  const [showQuantityModal, setShowQuantityModal] = useState(false)
+  const [scannedMaterialForQuantity, setScannedMaterialForQuantity] = useState<RawMaterial | null>(null)
+  const [enteredQuantity, setEnteredQuantity] = useState<string>("1")
+
   const loadRawMaterials = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -123,16 +127,33 @@ export default function RawMaterialInventoryPage() {
   }
 
   const handleDelete = async (id: number, name: string) => {
-    if (window.confirm(`Are you sure you want to delete "${name}"?`)) {
-      const success = await deleteRawMaterial(id)
-      if (success) {
-        // Reload data from database to ensure consistency
-        await loadRawMaterials()
-        toast({ title: "Raw material deleted", description: `${name} has been removed and data refreshed.` })
-      } else {
+    if (
+      window.confirm(
+        `Are you sure you want to delete "${name}"? This will also remove any associated purchase order items.`,
+      )
+    ) {
+      try {
+        const success = await deleteRawMaterial(id)
+        if (success) {
+          // Reload data from database to ensure consistency
+          await loadRawMaterials()
+          toast({
+            title: "Raw material deleted",
+            description: `${name} and all associated references have been removed successfully.`,
+          })
+        } else {
+          toast({
+            title: "Error",
+            description:
+              "Failed to delete raw material. It may be referenced by other records that cannot be automatically removed.",
+            variant: "destructive",
+          })
+        }
+      } catch (error) {
+        console.error("Error in handleDelete:", error)
         toast({
           title: "Error",
-          description: "Failed to delete raw material. Please try again.",
+          description: "An unexpected error occurred while deleting the raw material.",
           variant: "destructive",
         })
       }
@@ -159,52 +180,100 @@ export default function RawMaterialInventoryPage() {
   const handleBarcodeScanned = async (result: { text: string; format: string } | null) => {
     if (!result || isProcessingBarcode) return
     setIsProcessingBarcode(true)
+    setShowBarcodeScanner(false) // Close scanner immediately
+
     try {
       const barcode = result.text
-      const type = result.format
       let parsed: any = null
       try {
         parsed = JSON.parse(barcode)
-      } catch (e) {}
+      } catch (e) {
+        // Not a JSON QR code, might be a direct SKU
+      }
+
+      let materialToProcess: RawMaterial | undefined | null = null
+
       if (parsed && parsed.type === "raw_material_update" && parsed.itemId) {
-        const material = rawMaterials.find(
-          (item) => item.id.toString() === parsed.itemId.toString() || item.sku === parsed.itemId,
+        materialToProcess = rawMaterials.find(
+          (item) => item.id.toString() === parsed.itemId.toString() || item.sku === parsed.itemId.toString(),
         )
-        if (material) {
-          const updatedMaterial = await updateRawMaterial(material.id, { quantity: material.quantity + 1 })
-          if (updatedMaterial) {
-            toast({
-              title: "Quantity Incremented",
-              description: `Quantity for ${material.name} incremented to ${updatedMaterial.quantity}`,
-            })
-            await loadRawMaterials()
-          } else {
-            toast({ title: "Error", description: "Failed to update material quantity.", variant: "destructive" })
-          }
-        } else {
-          window.alert("QR code does not match any raw material.")
+        if (!materialToProcess) {
+          toast({
+            title: "Not Found",
+            description: "QR code data does not match any known raw material.",
+            variant: "destructive",
+          })
         }
       } else {
-        const material = rawMaterials.find((item) => item.sku === barcode)
-        if (material) {
-          const updatedMaterial = await updateRawMaterial(material.id, { quantity: material.quantity + 1 })
-          if (updatedMaterial) {
-            toast({
-              title: "Quantity Incremented",
-              description: `Quantity for ${material.name} incremented to ${updatedMaterial.quantity}`,
-            })
-            await loadRawMaterials()
-          } else {
-            toast({ title: "Error", description: "Failed to update material quantity.", variant: "destructive" })
-          }
-        } else {
-          window.alert("Raw Material Not Found. Would you like to add this material?")
+        materialToProcess = rawMaterials.find((item) => item.sku === barcode)
+        if (!materialToProcess && parsed) {
+          // If it was parsed but not raw_material_update type
+          toast({
+            title: "Invalid QR",
+            description: "Scanned QR code is not for a raw material update.",
+            variant: "destructive",
+          })
+        } else if (!materialToProcess) {
+          toast({
+            title: "Not Found",
+            description: "Scanned barcode does not match any raw material SKU.",
+            variant: "destructive",
+          })
         }
       }
-      setShowBarcodeScanner(false)
+
+      if (materialToProcess) {
+        setScannedMaterialForQuantity(materialToProcess)
+        setEnteredQuantity("1")
+        setShowQuantityModal(true)
+      }
     } catch (error) {
-      window.alert("Error: Failed to process barcode scan")
+      console.error("Error processing barcode scan:", error)
+      toast({ title: "Scan Error", description: "Error: Failed to process barcode scan.", variant: "destructive" })
     } finally {
+      setIsProcessingBarcode(false)
+    }
+  }
+
+  const handleQuantitySubmit = async () => {
+    if (!scannedMaterialForQuantity || !enteredQuantity) return
+
+    const quantityToAdd = Number(enteredQuantity)
+    if (isNaN(quantityToAdd) || quantityToAdd <= 0) {
+      toast({
+        title: "Invalid Quantity",
+        description: "Please enter a valid positive number for the quantity.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsProcessingBarcode(true)
+    try {
+      const updatedMaterial = await updateRawMaterial(scannedMaterialForQuantity.id, {
+        quantity: scannedMaterialForQuantity.quantity + quantityToAdd,
+      })
+
+      if (updatedMaterial) {
+        toast({
+          title: "Quantity Updated",
+          description: `Quantity for ${scannedMaterialForQuantity.name} updated to ${updatedMaterial.quantity}.`,
+        })
+        await loadRawMaterials()
+      } else {
+        toast({ title: "Update Error", description: "Failed to update material quantity.", variant: "destructive" })
+      }
+    } catch (error) {
+      console.error("Error updating quantity:", error)
+      toast({
+        title: "Update Error",
+        description: "An error occurred while updating quantity.",
+        variant: "destructive",
+      })
+    } finally {
+      setShowQuantityModal(false)
+      setScannedMaterialForQuantity(null)
+      setEnteredQuantity("1")
       setIsProcessingBarcode(false)
     }
   }
@@ -464,6 +533,70 @@ export default function RawMaterialInventoryPage() {
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Quantity Input Modal */}
+        {scannedMaterialForQuantity && (
+          <Dialog
+            open={showQuantityModal}
+            onOpenChange={(isOpen) => {
+              if (!isOpen) {
+                setShowQuantityModal(false)
+                setScannedMaterialForQuantity(null)
+                setEnteredQuantity("1")
+              } else {
+                setShowQuantityModal(true)
+              }
+            }}
+          >
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Enter Quantity for {scannedMaterialForQuantity.name}</DialogTitle>
+              </DialogHeader>
+              <div className="py-4 space-y-2">
+                <p className="text-sm">
+                  Current stock:{" "}
+                  <span className="font-semibold">
+                    {scannedMaterialForQuantity.quantity} {scannedMaterialForQuantity.unit}
+                  </span>
+                </p>
+                <div>
+                  <label htmlFor="quantityInput" className="block text-sm font-medium mb-1">
+                    Quantity to Add:
+                  </label>
+                  <Input
+                    id="quantityInput"
+                    type="number"
+                    value={enteredQuantity}
+                    onChange={(e) => setEnteredQuantity(e.target.value)}
+                    placeholder="e.g., 10"
+                    min="1"
+                    className="w-full"
+                    autoFocus
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowQuantityModal(false)
+                    setScannedMaterialForQuantity(null)
+                    setEnteredQuantity("1")
+                  }}
+                  disabled={isProcessingBarcode}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleQuantitySubmit}
+                  disabled={isProcessingBarcode || !enteredQuantity || Number(enteredQuantity) <= 0}
+                >
+                  {isProcessingBarcode ? "Adding..." : "Add Quantity"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
 
         {/* Generate Product Order Modal */}
         <GenerateProductOrderModal

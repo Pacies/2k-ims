@@ -46,11 +46,9 @@ export default function AddItemModal({ onItemAdded, onItemUpdated }: AddItemModa
     { name: "T-Shirt", category: "Top" },
     { name: "Polo Shirt", category: "Top" },
     { name: "Blouse", category: "Top" },
-    { name: "Tank Top", category: "Top" },
     { name: "Pajama", category: "Bottom" },
     { name: "Shorts", category: "Bottom" },
     { name: "Pants", category: "Bottom" },
-    { name: "Skirt", category: "Bottom" },
     { name: "Others", category: "" },
   ]
 
