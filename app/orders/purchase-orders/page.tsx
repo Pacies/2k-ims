@@ -7,15 +7,13 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Search, RefreshCw, Plus, Eye, ArrowLeft, FileText } from "lucide-react"
+import { Search, RefreshCw, Eye, ArrowLeft, FileText } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import PageHeader from "@/components/page-header"
 import MainLayout from "@/components/main-layout"
 import EditPurchaseOrderModal from "@/components/edit-purchase-order-modal"
 import ManualPOGenerationModal from "@/components/manual-po-generation-modal"
-import { getPurchaseOrders, generatePurchaseOrdersForLowStock, type PurchaseOrder } from "@/lib/purchase-orders-utils"
-import { getRawMaterials } from "@/lib/database"
-import { addActivity } from "@/lib/activity-store"
+import { getPurchaseOrders, type PurchaseOrder } from "@/lib/purchase-orders-utils"
 import { useRouter } from "next/navigation"
 
 export default function PurchaseOrdersPage() {
@@ -26,7 +24,6 @@ export default function PurchaseOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [editingOrder, setEditingOrder] = useState<PurchaseOrder | null>(null)
   const [showManualPOModal, setShowManualPOModal] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
   const { toast } = useToast()
   const router = useRouter()
 
@@ -80,37 +77,6 @@ export default function PurchaseOrdersPage() {
   const handleManualPOCreated = async () => {
     await loadPurchaseOrders()
     setShowManualPOModal(false)
-  }
-
-  const handleGeneratePOs = async () => {
-    setIsGenerating(true)
-    try {
-      const rawMaterials = await getRawMaterials()
-      const generatedOrders = await generatePurchaseOrdersForLowStock(rawMaterials)
-
-      if (generatedOrders.length > 0) {
-        await loadPurchaseOrders()
-        addActivity(`Generated ${generatedOrders.length} purchase order(s) for low stock items`)
-        toast({
-          title: "Purchase orders generated",
-          description: `${generatedOrders.length} purchase order(s) created for low stock items.`,
-        })
-      } else {
-        toast({
-          title: "No orders needed",
-          description: "No low stock items found or purchase orders already exist.",
-        })
-      }
-    } catch (error) {
-      console.error("Error generating purchase orders:", error)
-      toast({
-        title: "Error",
-        description: "Failed to generate purchase orders. Please try again.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsGenerating(false)
-    }
   }
 
   const getStatusBadge = (status: string) => {
@@ -185,17 +151,9 @@ export default function PurchaseOrdersPage() {
                 <Button variant="outline" size="icon" onClick={loadPurchaseOrders} disabled={isLoading}>
                   <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setShowManualPOModal(true)}
-                  className="border-blue-500 text-blue-600 hover:bg-blue-50"
-                >
+                <Button onClick={() => setShowManualPOModal(true)} className="bg-green-600 hover:bg-green-700">
                   <FileText className="h-4 w-4 mr-2" />
                   Generate PO Manually
-                </Button>
-                <Button onClick={handleGeneratePOs} disabled={isGenerating} className="bg-green-600 hover:bg-green-700">
-                  <Plus className="h-4 w-4 mr-2" />
-                  {isGenerating ? "Generating..." : "Generate POs"}
                 </Button>
               </div>
             </div>
@@ -245,7 +203,7 @@ export default function PurchaseOrdersPage() {
                     <TableRow>
                       <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                         {purchaseOrders.length === 0
-                          ? "No purchase orders found. Generate POs for low stock items to get started."
+                          ? "No purchase orders found. Generate POs manually to get started."
                           : "No purchase orders match your search criteria."}
                       </TableCell>
                     </TableRow>

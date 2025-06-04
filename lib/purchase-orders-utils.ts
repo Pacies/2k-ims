@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient"
-import { getCurrentUser, logActivity, type RawMaterial } from "./database"
+import { getCurrentUser, logActivity } from "./database"
 
 export interface PurchaseOrder {
   id: number
@@ -263,77 +263,5 @@ export async function deletePurchaseOrder(id: number): Promise<boolean> {
   } catch (error) {
     console.error("Unexpected error deleting purchase order:", error)
     return false
-  }
-}
-
-// Generate purchase orders for low stock items
-export async function generatePurchaseOrdersForLowStock(rawMaterials: RawMaterial[]): Promise<PurchaseOrder[]> {
-  try {
-    const lowStockItems = rawMaterials.filter((item) => item.status === "low-stock" || item.status === "out-of-stock")
-
-    if (lowStockItems.length === 0) {
-      return []
-    }
-
-    // Group by supplier
-    const itemsBySupplier = lowStockItems.reduce(
-      (acc, item) => {
-        const supplier = item.supplier || "Unknown Supplier"
-        if (!acc[supplier]) {
-          acc[supplier] = []
-        }
-        acc[supplier].push(item)
-        return acc
-      },
-      {} as Record<string, RawMaterial[]>,
-    )
-
-    const createdOrders: PurchaseOrder[] = []
-
-    // Create PO for each supplier
-    for (const [supplier, items] of Object.entries(itemsBySupplier)) {
-      // Check if there's already a pending PO for this supplier
-      const { data: existingPO } = await supabase!
-        .from("purchase_orders")
-        .select("id")
-        .eq("supplier", supplier)
-        .eq("status", "pending")
-        .limit(1)
-
-      if (existingPO && existingPO.length > 0) {
-        console.log(`Skipping PO creation for ${supplier} - pending PO already exists`)
-        continue
-      }
-
-      const orderItems = items.map((item) => {
-        // Calculate quantity needed (reorder level * 2 - current quantity)
-        const reorderLevel = item.reorder_level || 20
-        const currentQuantity = item.quantity || 0
-        const quantityNeeded = Math.max(reorderLevel * 2 - currentQuantity, reorderLevel)
-
-        return {
-          raw_material_id: item.id,
-          material_name: item.name,
-          quantity: quantityNeeded,
-          unit_price: item.cost_per_unit,
-        }
-      })
-
-      const orderData: CreatePurchaseOrderData = {
-        supplier,
-        notes: `Auto-generated PO for low stock items. Generated on ${new Date().toLocaleDateString()}.`,
-        items: orderItems,
-      }
-
-      const createdOrder = await createPurchaseOrder(orderData)
-      if (createdOrder) {
-        createdOrders.push(createdOrder)
-      }
-    }
-
-    return createdOrders
-  } catch (error) {
-    console.error("Error generating purchase orders for low stock:", error)
-    return []
   }
 }
