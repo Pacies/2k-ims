@@ -15,6 +15,9 @@ export interface Invoice {
   id: string
   invoiceNumber: string
   customerName: string
+  customerEmail: string // Added to match database schema
+  customerAddress?: string
+  customerPhone?: string
   items: InvoiceItem[]
   subtotal: number
   taxRate: number
@@ -30,107 +33,297 @@ export interface Invoice {
 
 export type InvoiceStatus = "pending" | "fulfilled" | "cancelled"
 
-// Generate a new invoice number
+// Generate a new invoice number with better error handling and uniqueness guarantee
 export async function generateInvoiceNumber(): Promise<string> {
   try {
-    // Get the next invoice number from settings
-    const { data: settings, error: settingsError } = await supabase!
-      .from("invoice_settings")
-      .select("next_invoice_number")
-      .single()
-
-    if (settingsError) {
-      console.error("Error getting invoice settings:", settingsError)
-      // Fallback: get the highest existing invoice number and increment
-      const { data: invoices } = await supabase!
-        .from("invoices")
-        .select("invoice_number")
-        .order("invoice_number", { ascending: false })
-        .limit(1)
-
-      let nextNumber = 1001
-      if (invoices && invoices.length > 0) {
-        const lastNumber = Number.parseInt(invoices[0].invoice_number.replace("INV-", ""))
-        nextNumber = lastNumber + 1
-      }
-      return `INV-${nextNumber.toString().padStart(4, "0")}`
+    // Check if supabase client is available
+    if (!supabase) {
+      console.warn("Supabase client not available, using fallback invoice number")
+      return `INV-${Date.now().toString().slice(-6)}`
     }
 
-    const invoiceNumber = `INV-${settings.next_invoice_number.toString().padStart(4, "0")}`
+    let attempts = 0
+    const maxAttempts = 10
 
-    // Update the counter
-    await supabase!
-      .from("invoice_settings")
-      .update({ next_invoice_number: settings.next_invoice_number + 1 })
-      .eq("id", 1)
+    while (attempts < maxAttempts) {
+      attempts++
 
-    return invoiceNumber
+      try {
+        // Try to get the next invoice number from settings
+        const { data: settings, error: settingsError } = await supabase
+          .from("invoice_settings")
+          .select("next_invoice_number")
+          .single()
+
+        let nextNumber = 1001
+
+        if (settingsError) {
+          console.warn("Invoice settings not found, using fallback method:", settingsError.message)
+
+          // Fallback: get the highest existing invoice number and increment
+          const { data: invoices, error: invoicesError } = await supabase
+            .from("invoices")
+            .select("invoice_number")
+            .order("invoice_number", { ascending: false })
+            .limit(1)
+
+          if (!invoicesError && invoices && invoices.length > 0) {
+            const lastInvoiceNumber = invoices[0].invoice_number
+            if (lastInvoiceNumber && lastInvoiceNumber.startsWith("INV-")) {
+              const lastNumber = Number.parseInt(lastInvoiceNumber.replace("INV-", ""))
+              if (!isNaN(lastNumber)) {
+                nextNumber = lastNumber + 1
+              }
+            }
+          }
+        } else {
+          nextNumber = settings.next_invoice_number
+        }
+
+        const invoiceNumber = `INV-${nextNumber.toString().padStart(4, "0")}`
+
+        // Check if this invoice number already exists
+        const { data: existingInvoice, error: checkError } = await supabase
+          .from("invoices")
+          .select("invoice_number")
+          .eq("invoice_number", invoiceNumber)
+          .single()
+
+        if (checkError && checkError.code === "PGRST116") {
+          // No existing invoice found, this number is available
+          try {
+            // Try to update the counter in settings
+            if (!settingsError) {
+              await supabase
+                .from("invoice_settings")
+                .update({ next_invoice_number: nextNumber + 1 })
+                .eq("id", 1)
+            }
+          } catch (updateError) {
+            console.warn("Could not update invoice counter:", updateError)
+          }
+
+          return invoiceNumber
+        } else if (!checkError && existingInvoice) {
+          // Invoice number already exists, try next number
+          console.warn(`Invoice number ${invoiceNumber} already exists, trying next number`)
+
+          // Force increment and try again
+          if (!settingsError) {
+            await supabase
+              .from("invoice_settings")
+              .update({ next_invoice_number: nextNumber + 1 })
+              .eq("id", 1)
+          }
+          continue
+        } else {
+          console.error("Error checking existing invoice:", checkError)
+          continue
+        }
+      } catch (error) {
+        console.error(`Attempt ${attempts} failed:`, error)
+        if (attempts >= maxAttempts) {
+          break
+        }
+        // Wait a bit before retrying
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
+
+    // Final fallback to timestamp-based number with random component
+    const timestamp = Date.now().toString().slice(-6)
+    const random = Math.floor(Math.random() * 1000)
+      .toString()
+      .padStart(3, "0")
+    return `INV-${timestamp}${random}`
   } catch (error) {
     console.error("Error generating invoice number:", error)
-    // Fallback to timestamp-based number
-    return `INV-${Date.now().toString().slice(-4)}`
+    // Ultimate fallback
+    const timestamp = Date.now().toString().slice(-6)
+    const random = Math.floor(Math.random() * 10000)
+      .toString()
+      .padStart(4, "0")
+    return `INV-${timestamp}${random}`
   }
 }
 
-// Create a new invoice
+// Create a new invoice with comprehensive error handling
 export async function createInvoice(
   invoiceData: Omit<Invoice, "id" | "invoiceNumber" | "createdAt" | "updatedAt">,
 ): Promise<Invoice> {
   try {
-    const invoiceNumber = await generateInvoiceNumber()
-
-    // Insert invoice header
-    const { data: invoiceHeader, error: invoiceError } = await supabase!
-      .from("invoices")
-      .insert({
-        invoice_number: invoiceNumber,
-        customer_name: invoiceData.customerName,
-        subtotal: invoiceData.subtotal,
-        tax_rate: invoiceData.taxRate,
-        tax_amount: invoiceData.taxAmount,
-        total_amount: invoiceData.totalAmount,
-        status: invoiceData.status,
-        issue_date: invoiceData.issueDate,
-        due_date: invoiceData.dueDate,
-        notes: invoiceData.notes,
-      })
-      .select()
-      .single()
-
-    if (invoiceError) {
-      console.error("Error creating invoice:", invoiceError)
-      throw new Error("Failed to create invoice")
+    // Validate input data
+    if (!invoiceData.customerName?.trim()) {
+      throw new Error("Customer name is required")
     }
 
-    // Insert invoice items
-    const invoiceItems = invoiceData.items.map((item) => ({
+    if (!invoiceData.items || invoiceData.items.length === 0) {
+      throw new Error("At least one item is required")
+    }
+
+    if (!invoiceData.issueDate || !invoiceData.dueDate) {
+      throw new Error("Issue date and due date are required")
+    }
+
+    // Check if supabase client is available
+    if (!supabase) {
+      throw new Error("Database connection not available")
+    }
+
+    let invoiceNumber: string
+    let attempts = 0
+    const maxAttempts = 5
+
+    // Generate a unique invoice number with retry logic
+    while (attempts < maxAttempts) {
+      attempts++
+      invoiceNumber = await generateInvoiceNumber()
+
+      // Double-check uniqueness before proceeding
+      const { data: existingInvoice, error: checkError } = await supabase
+        .from("invoices")
+        .select("invoice_number")
+        .eq("invoice_number", invoiceNumber)
+        .single()
+
+      if (checkError && checkError.code === "PGRST116") {
+        // No existing invoice found, we can use this number
+        break
+      } else if (!checkError && existingInvoice) {
+        // Invoice number exists, generate a new one
+        console.warn(`Invoice number ${invoiceNumber} already exists, generating new one (attempt ${attempts})`)
+        if (attempts >= maxAttempts) {
+          // Use timestamp-based fallback
+          const timestamp = Date.now().toString()
+          const random = Math.floor(Math.random() * 100000)
+            .toString()
+            .padStart(5, "0")
+          invoiceNumber = `INV-${timestamp.slice(-7)}${random}`
+          break
+        }
+        continue
+      } else {
+        console.error("Error checking invoice uniqueness:", checkError)
+        if (attempts >= maxAttempts) {
+          throw new Error("Failed to generate unique invoice number")
+        }
+        continue
+      }
+    }
+
+    console.log("Generated unique invoice number:", invoiceNumber)
+
+    // Prepare invoice data for insertion - include all required fields
+    const invoiceInsertData = {
+      invoice_number: invoiceNumber!,
+      customer_name: invoiceData.customerName.trim(),
+      customer_email: invoiceData.customerEmail || "customer@example.com",
+      customer_address: invoiceData.customerAddress || "",
+      customer_phone: invoiceData.customerPhone || "",
+      subtotal: Number(invoiceData.subtotal) || 0,
+      tax_rate: Number(invoiceData.taxRate) || 0,
+      tax_amount: Number(invoiceData.taxAmount) || 0,
+      total_amount: Number(invoiceData.totalAmount) || 0,
+      status: invoiceData.status || "pending",
+      issue_date: invoiceData.issueDate,
+      due_date: invoiceData.dueDate,
+      notes: invoiceData.notes || "",
+    }
+
+    console.log("Inserting invoice data:", invoiceInsertData)
+
+    // Insert invoice header with retry logic for unique constraint violations
+    let invoiceHeader: any = null
+    let insertAttempts = 0
+    const maxInsertAttempts = 3
+
+    while (insertAttempts < maxInsertAttempts) {
+      insertAttempts++
+
+      const { data, error: invoiceError } = await supabase.from("invoices").insert(invoiceInsertData).select().single()
+
+      if (!invoiceError) {
+        invoiceHeader = data
+        break
+      } else if (invoiceError.code === "23505" && invoiceError.message.includes("invoices_invoice_number_key")) {
+        // Unique constraint violation, generate new invoice number
+        console.warn(
+          `Unique constraint violation for ${invoiceNumber}, generating new number (insert attempt ${insertAttempts})`,
+        )
+
+        if (insertAttempts >= maxInsertAttempts) {
+          // Final attempt with timestamp-based number
+          const timestamp = Date.now().toString()
+          const random = Math.floor(Math.random() * 100000)
+            .toString()
+            .padStart(5, "0")
+          invoiceInsertData.invoice_number = `INV-${timestamp.slice(-7)}${random}`
+        } else {
+          // Generate new invoice number and try again
+          invoiceInsertData.invoice_number = await generateInvoiceNumber()
+        }
+        continue
+      } else {
+        console.error("Error creating invoice header:", invoiceError)
+        throw new Error(`Failed to create invoice: ${invoiceError.message || "Unknown database error"}`)
+      }
+    }
+
+    if (!invoiceHeader) {
+      throw new Error("Failed to create invoice after multiple attempts")
+    }
+
+    console.log("Invoice header created:", invoiceHeader)
+
+    // Prepare invoice items for insertion
+    const invoiceItems = invoiceData.items.map((item, index) => ({
       invoice_id: invoiceHeader.id,
-      product_id: item.productId,
-      product_name: item.productName,
-      sku: item.sku,
-      quantity: item.quantity,
-      unit_price: item.unitPrice,
-      total_price: item.totalPrice,
+      product_id: Number(item.productId),
+      product_name: item.productName || `Product ${index + 1}`,
+      sku: item.sku || "",
+      quantity: Number(item.quantity) || 0,
+      unit_price: Number(item.unitPrice) || 0,
+      total_price: Number(item.totalPrice) || 0,
     }))
 
-    const { error: itemsError } = await supabase!.from("invoice_items").insert(invoiceItems)
+    console.log("Inserting invoice items:", invoiceItems)
+
+    // Insert invoice items
+    const { data: insertedItems, error: itemsError } = await supabase
+      .from("invoice_items")
+      .insert(invoiceItems)
+      .select()
 
     if (itemsError) {
       console.error("Error creating invoice items:", itemsError)
-      // Clean up the invoice header if items failed
-      await supabase!.from("invoices").delete().eq("id", invoiceHeader.id)
-      throw new Error("Failed to create invoice items")
+      // Try to clean up the invoice header if items failed
+      try {
+        await supabase.from("invoices").delete().eq("id", invoiceHeader.id)
+      } catch (cleanupError) {
+        console.error("Failed to cleanup invoice header:", cleanupError)
+      }
+      throw new Error(`Failed to create invoice items: ${itemsError.message || "Unknown database error"}`)
     }
 
+    console.log("Invoice items created:", insertedItems)
+
     // Log activity
-    await logActivity("create", `Created invoice ${invoiceNumber} for ${invoiceData.customerName}`)
+    try {
+      await logActivity("create", `Created invoice ${invoiceHeader.invoice_number} for ${invoiceData.customerName}`)
+    } catch (logError) {
+      console.warn("Failed to log activity:", logError)
+      // Don't fail the entire operation for logging issues
+    }
 
     // Return the complete invoice
-    return {
+    const completeInvoice: Invoice = {
       id: invoiceHeader.id,
       invoiceNumber: invoiceHeader.invoice_number,
       customerName: invoiceHeader.customer_name,
-      items: invoiceData.items,
+      customerEmail: invoiceHeader.customer_email,
+      customerAddress: invoiceHeader.customer_address,
+      customerPhone: invoiceHeader.customer_phone,
+      items: invoiceData.items, // Use original items data
       subtotal: invoiceHeader.subtotal,
       taxRate: invoiceHeader.tax_rate,
       taxAmount: invoiceHeader.tax_amount,
@@ -142,17 +335,31 @@ export async function createInvoice(
       createdAt: invoiceHeader.created_at,
       updatedAt: invoiceHeader.updated_at,
     }
+
+    console.log("Invoice created successfully:", completeInvoice)
+    return completeInvoice
   } catch (error) {
     console.error("Error in createInvoice:", error)
-    throw error
+
+    // Provide more specific error messages
+    if (error instanceof Error) {
+      throw error
+    } else {
+      throw new Error("An unexpected error occurred while creating the invoice")
+    }
   }
 }
 
-// Get all invoices
+// Get all invoices with better error handling
 export async function getInvoices(): Promise<Invoice[]> {
   try {
+    if (!supabase) {
+      console.warn("Supabase client not available")
+      return []
+    }
+
     // Get invoices with their items
-    const { data: invoices, error: invoicesError } = await supabase!
+    const { data: invoices, error: invoicesError } = await supabase
       .from("invoices")
       .select(`
         *,
@@ -178,6 +385,9 @@ export async function getInvoices(): Promise<Invoice[]> {
       id: invoice.id,
       invoiceNumber: invoice.invoice_number,
       customerName: invoice.customer_name,
+      customerEmail: invoice.customer_email,
+      customerAddress: invoice.customer_address,
+      customerPhone: invoice.customer_phone,
       items: (invoice.invoice_items || []).map((item: any) => ({
         id: item.id,
         productId: item.product_id,
@@ -204,10 +414,14 @@ export async function getInvoices(): Promise<Invoice[]> {
   }
 }
 
-// Get invoice by ID
+// Get invoice by ID with better error handling
 export async function getInvoiceById(id: string): Promise<Invoice | null> {
   try {
-    const { data: invoice, error } = await supabase!
+    if (!supabase || !id) {
+      return null
+    }
+
+    const { data: invoice, error } = await supabase
       .from("invoices")
       .select(`
         *,
@@ -229,10 +443,17 @@ export async function getInvoiceById(id: string): Promise<Invoice | null> {
       return null
     }
 
+    if (!invoice) {
+      return null
+    }
+
     return {
       id: invoice.id,
       invoiceNumber: invoice.invoice_number,
       customerName: invoice.customer_name,
+      customerEmail: invoice.customer_email,
+      customerAddress: invoice.customer_address,
+      customerPhone: invoice.customer_phone,
       items: (invoice.invoice_items || []).map((item: any) => ({
         id: item.id,
         productId: item.product_id,
@@ -332,10 +553,14 @@ export async function fulfillInvoiceWithInventoryDeduction(invoiceId: string): P
         await updateInventoryItem(item.productId, { stock: newStock })
 
         // Log inventory deduction
-        await logActivity(
-          "inventory_deduction",
-          `Deducted ${item.quantity} dz of ${item.productName} for invoice ${invoice.invoiceNumber}`,
-        )
+        try {
+          await logActivity(
+            "inventory_deduction",
+            `Deducted ${item.quantity} dz of ${item.productName} for invoice ${invoice.invoiceNumber}`,
+          )
+        } catch (logError) {
+          console.warn("Failed to log inventory deduction:", logError)
+        }
       }
     }
 
@@ -355,6 +580,10 @@ export async function fulfillInvoiceWithInventoryDeduction(invoiceId: string): P
 // Update invoice status
 export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Promise<Invoice | null> {
   try {
+    if (!supabase) {
+      return null
+    }
+
     const invoice = await getInvoiceById(id)
     if (!invoice) return null
 
@@ -366,7 +595,7 @@ export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Pr
     }
 
     // Update the invoice status
-    const { data, error } = await supabase!.from("invoices").update({ status }).eq("id", id).select().single()
+    const { data, error } = await supabase.from("invoices").update({ status }).eq("id", id).select().single()
 
     if (error) {
       console.error("Error updating invoice status:", error)
@@ -374,7 +603,11 @@ export async function updateInvoiceStatus(id: string, status: InvoiceStatus): Pr
     }
 
     // Log activity
-    await logActivity("update", `Invoice ${invoice.invoiceNumber} status changed from ${previousStatus} to ${status}`)
+    try {
+      await logActivity("update", `Invoice ${invoice.invoiceNumber} status changed from ${previousStatus} to ${status}`)
+    } catch (logError) {
+      console.warn("Failed to log status change:", logError)
+    }
 
     // Return updated invoice
     return await getInvoiceById(id)
@@ -404,10 +637,14 @@ async function restoreInventoryForInvoice(invoice: Invoice): Promise<void> {
         console.log(`Restored ${item.quantity} units of ${item.productName}. New stock: ${newStock}`)
 
         // Log individual inventory restoration
-        await logActivity(
-          "inventory_restoration",
-          `Restored ${item.quantity} units of ${item.productName} from invoice ${invoice.invoiceNumber}`,
-        )
+        try {
+          await logActivity(
+            "inventory_restoration",
+            `Restored ${item.quantity} units of ${item.productName} from invoice ${invoice.invoiceNumber}`,
+          )
+        } catch (logError) {
+          console.warn("Failed to log inventory restoration:", logError)
+        }
       }
     }
   } catch (error) {
@@ -418,6 +655,10 @@ async function restoreInventoryForInvoice(invoice: Invoice): Promise<void> {
 // Delete invoice
 export async function deleteInvoice(id: string): Promise<boolean> {
   try {
+    if (!supabase) {
+      return false
+    }
+
     const invoice = await getInvoiceById(id)
     if (!invoice) return false
 
@@ -427,7 +668,7 @@ export async function deleteInvoice(id: string): Promise<boolean> {
     }
 
     // Delete invoice (items will be deleted automatically due to CASCADE)
-    const { error } = await supabase!.from("invoices").delete().eq("id", id)
+    const { error } = await supabase.from("invoices").delete().eq("id", id)
 
     if (error) {
       console.error("Error deleting invoice:", error)
@@ -435,7 +676,11 @@ export async function deleteInvoice(id: string): Promise<boolean> {
     }
 
     // Log activity
-    await logActivity("delete", `Deleted invoice ${invoice.invoiceNumber}`)
+    try {
+      await logActivity("delete", `Deleted invoice ${invoice.invoiceNumber}`)
+    } catch (logError) {
+      console.warn("Failed to log deletion:", logError)
+    }
 
     return true
   } catch (error) {
@@ -446,14 +691,14 @@ export async function deleteInvoice(id: string): Promise<boolean> {
 
 // Calculate invoice totals
 export function calculateInvoiceTotals(items: InvoiceItem[], taxRate = 0) {
-  const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0)
+  const subtotal = items.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0)
   const taxAmount = subtotal * (taxRate / 100)
   const totalAmount = subtotal + taxAmount
 
   return {
-    subtotal,
-    taxAmount,
-    totalAmount,
+    subtotal: Number(subtotal.toFixed(2)),
+    taxAmount: Number(taxAmount.toFixed(2)),
+    totalAmount: Number(totalAmount.toFixed(2)),
   }
 }
 
@@ -467,10 +712,10 @@ export async function getInvoiceStats() {
       pending: allInvoices.filter((inv) => inv.status === "pending").length,
       fulfilled: allInvoices.filter((inv) => inv.status === "fulfilled").length,
       cancelled: allInvoices.filter((inv) => inv.status === "cancelled").length,
-      totalValue: allInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0),
+      totalValue: allInvoices.reduce((sum, inv) => sum + (Number(inv.totalAmount) || 0), 0),
       fulfilledValue: allInvoices
         .filter((inv) => inv.status === "fulfilled")
-        .reduce((sum, inv) => sum + inv.totalAmount, 0),
+        .reduce((sum, inv) => sum + (Number(inv.totalAmount) || 0), 0),
     }
 
     return stats

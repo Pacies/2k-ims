@@ -4,7 +4,7 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { motion } from "framer-motion"
 import { LogOut } from "lucide-react"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import type { User } from "@/lib/database"
@@ -76,6 +76,17 @@ export default function Navbar() {
     navItems.push({ name: "Manage Users", path: "/manage-user", icon: Users })
   }
 
+  // Generate user initials for avatar
+  const getUserInitials = () => {
+    if (!currentUser?.username) return "2K"
+
+    const names = currentUser.username.trim().split(" ")
+    if (names.length > 1) {
+      return (names[0][0] + names[names.length - 1][0]).toUpperCase()
+    }
+    return currentUser.username.substring(0, 2).toUpperCase()
+  }
+
   return (
     <motion.nav
       className="fixed top-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-200"
@@ -123,8 +134,8 @@ export default function Navbar() {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Avatar className="border-2 border-blue-500 cursor-pointer">
-                  <AvatarImage src="/placeholder.svg?height=40&width=40" alt="User" />
-                  <AvatarFallback>{currentUser?.username?.substring(0, 2).toUpperCase() || "2K"}</AvatarFallback>
+                  {/* Remove the placeholder image to ensure fallback is shown */}
+                  <AvatarFallback className="bg-blue-500 text-white font-semibold">{getUserInitials()}</AvatarFallback>
                 </Avatar>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">

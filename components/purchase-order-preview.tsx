@@ -14,7 +14,6 @@ import {
 import { FileText, Download, Edit, Trash2, Eye } from "lucide-react"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { PurchaseOrder } from "@/lib/purchase-orders-utils"
 
@@ -49,39 +48,6 @@ export default function PurchaseOrderPreview({
       onDelete(purchaseOrder.id)
     } else {
       console.log("❌ PurchaseOrderPreview: Cannot delete - missing onDelete or purchaseOrder.id")
-    }
-  }
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "pending":
-        return (
-          <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
-            Pending
-          </Badge>
-        )
-      case "approved":
-        return (
-          <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-            Approved
-          </Badge>
-        )
-      case "sent":
-        return (
-          <Badge variant="secondary" className="bg-purple-100 text-purple-800">
-            Sent
-          </Badge>
-        )
-      case "received":
-        return (
-          <Badge variant="secondary" className="bg-green-100 text-green-800">
-            Received
-          </Badge>
-        )
-      case "cancelled":
-        return <Badge variant="destructive">Cancelled</Badge>
-      default:
-        return <Badge variant="outline">{status}</Badge>
     }
   }
 
@@ -177,14 +143,10 @@ export default function PurchaseOrderPreview({
         <div className="mb-8">
           <div className="bg-gray-50 p-4 rounded-lg border">
             <h2 className="text-lg font-bold text-gray-800 mb-4">Supplier Information</h2>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <div>
                 <p className="text-sm text-gray-600">Name:</p>
                 <p className="font-semibold">{purchaseOrder.supplier}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-600">Status:</p>
-                <div className="mt-1">{getStatusBadge(purchaseOrder.status)}</div>
               </div>
             </div>
           </div>

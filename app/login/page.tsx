@@ -41,7 +41,7 @@ export default function LoginPage() {
 
       // If database auth fails, show error
       if (!user) {
-        setError("Invalid username or password. For demo purposes, try: admin/admin123 or staff/staff123")
+        setError("Invalid username or password.")
         setIsLoading(false)
         return
       }

@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Package, TrendingUp, AlertTriangle, Wrench, Zap, Turtle } from "lucide-react"
 import {
   getInventoryItems,
@@ -295,24 +293,15 @@ export default function Dashboard() {
 
         {/* Main Content */}
         <div className="grid gap-6">
-          <Tabs defaultValue="activity" className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="activity">Recent Activity</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="activity" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Recent Activity</CardTitle>
-                  <CardDescription>Latest actions in your inventory system</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ActivityList activities={activities} />
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-          </Tabs>
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Activity</CardTitle>
+              <CardDescription>Latest actions in your inventory system</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ActivityList activities={activities} />
+            </CardContent>
+          </Card>
         </div>
       </div>
     </MainLayout>

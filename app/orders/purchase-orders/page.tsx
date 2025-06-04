@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Search, RefreshCw, Eye, ArrowLeft, FileText } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import PageHeader from "@/components/page-header"
@@ -21,7 +20,6 @@ export default function PurchaseOrdersPage() {
   const [filteredOrders, setFilteredOrders] = useState<PurchaseOrder[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
   const [editingOrder, setEditingOrder] = useState<PurchaseOrder | null>(null)
   const [showManualPOModal, setShowManualPOModal] = useState(false)
   const { toast } = useToast()
@@ -59,15 +57,11 @@ export default function PurchaseOrdersPage() {
       )
     }
 
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((order) => order.status === statusFilter)
-    }
-
     // Sort by created date (newest first)
     filtered = [...filtered].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
     setFilteredOrders(filtered)
-  }, [purchaseOrders, searchTerm, statusFilter])
+  }, [purchaseOrders, searchTerm])
 
   const handleOrderUpdated = async (updatedOrder: PurchaseOrder) => {
     await loadPurchaseOrders()
@@ -170,19 +164,6 @@ export default function PurchaseOrdersPage() {
                   className="pl-10"
                 />
               </div>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Filter by status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="sent">Sent</SelectItem>
-                  <SelectItem value="received">Received</SelectItem>
-                  <SelectItem value="cancelled">Cancelled</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
 
             {/* Purchase Orders Table */}
@@ -194,7 +175,6 @@ export default function PurchaseOrdersPage() {
                     <TableHead>Supplier</TableHead>
                     <TableHead>Order Date</TableHead>
                     <TableHead>Total</TableHead>
-                    <TableHead>Status</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -218,7 +198,6 @@ export default function PurchaseOrdersPage() {
                         <TableCell>{order.supplier}</TableCell>
                         <TableCell>{new Date(order.order_date).toLocaleDateString()}</TableCell>
                         <TableCell>₱{order.total_amount.toFixed(2)}</TableCell>
-                        <TableCell>{getStatusBadge(order.status)}</TableCell>
                         <TableCell>
                           <Button
                             variant="ghost"

@@ -68,6 +68,18 @@ export interface Activity {
   created_at: string
 }
 
+export interface ProductRecipe {
+  id: number
+  product_id: number
+  product_name: string
+  raw_material_id: number
+  raw_material_name: string
+  quantity_required: number
+  unit: string
+  created_at: string
+  updated_at: string
+}
+
 // Helper function to get supplier based on category
 export function getSupplierByCategory(category: string): string {
   switch (category.toLowerCase()) {
@@ -180,41 +192,7 @@ export async function authenticateUser(username: string, password: string): Prom
     // Test connection first
     const connectionOk = await testSupabaseConnection()
     if (!connectionOk) {
-      console.warn("Supabase connection failed, trying fallback authentication...")
-
-      // Fallback authentication for demo purposes
-      // In production, you'd want to handle this differently
-      if (username === "admin" && password === "admin123") {
-        const fallbackUser: User = {
-          id: "fallback-admin",
-          username: "admin",
-          email: "admin@example.com",
-          user_type: "admin",
-          status: "active",
-          created_at: new Date().toISOString(),
-        }
-
-        console.log("Fallback authentication successful for admin user")
-        await logActivity("login", `User ${fallbackUser.username} logged in (fallback mode)`)
-        return fallbackUser
-      }
-
-      if (username === "staff" && password === "staff123") {
-        const fallbackUser: User = {
-          id: "fallback-staff",
-          username: "staff",
-          email: "staff@example.com",
-          user_type: "staff",
-          status: "active",
-          created_at: new Date().toISOString(),
-        }
-
-        console.log("Fallback authentication successful for staff user")
-        await logActivity("login", `User ${fallbackUser.username} logged in (fallback mode)`)
-        return fallbackUser
-      }
-
-      console.error("Fallback authentication failed - invalid credentials")
+      console.warn("Supabase connection failed - unable to authenticate")
       return null
     }
 
@@ -301,6 +279,123 @@ export async function authenticateUser(username: string, password: string): Prom
   } catch (error) {
     console.error("Authentication error:", error)
     return null
+  }
+}
+
+// Database operations for product recipes
+export async function getProductRecipes(productId?: number): Promise<ProductRecipe[]> {
+  try {
+    console.log("Fetching product recipes for product ID:", productId)
+
+    if (!supabase) {
+      console.error("Supabase client not initialized")
+      return []
+    }
+
+    let query = supabase.from("product_recipes").select("*")
+
+    if (productId) {
+      // Try to find recipes by product_id first
+      query = query.eq("product_id", productId)
+    }
+
+    const { data, error } = await query.order("product_name", { ascending: true })
+
+    if (error) {
+      console.error("Error fetching product recipes:", error)
+      return []
+    }
+
+    console.log("Product recipes found:", data?.length || 0)
+    console.log("Recipe data:", data)
+
+    return data || []
+  } catch (error: any) {
+    console.error("Unexpected error fetching product recipes:", error)
+    return []
+  }
+}
+
+export async function getProductRecipesByName(productName: string): Promise<ProductRecipe[]> {
+  try {
+    console.log("Fetching product recipes for product name:", productName)
+
+    if (!supabase) {
+      console.error("Supabase client not initialized")
+      return []
+    }
+
+    const { data, error } = await supabase
+      .from("product_recipes")
+      .select("*")
+      .ilike("product_name", `%${productName}%`)
+      .order("product_name", { ascending: true })
+
+    if (error) {
+      console.error("Error fetching product recipes by name:", error)
+      return []
+    }
+
+    console.log("Product recipes found by name:", data?.length || 0)
+    console.log("Recipe data:", data)
+
+    return data || []
+  } catch (error: any) {
+    console.error("Unexpected error fetching product recipes by name:", error)
+    return []
+  }
+}
+
+export async function addProductRecipe(
+  recipeData: Omit<ProductRecipe, "id" | "created_at" | "updated_at">,
+): Promise<ProductRecipe | null> {
+  try {
+    const { data, error } = await supabase!.from("product_recipes").insert(recipeData).select().single()
+
+    if (error) {
+      console.error("Error adding product recipe:", error)
+      return null
+    }
+
+    await logActivity("create", `Added recipe for ${recipeData.product_name}: ${recipeData.raw_material_name}`)
+    return data
+  } catch (error: any) {
+    console.error("Unexpected error adding product recipe:", error)
+    return null
+  }
+}
+
+export async function updateProductRecipe(id: number, updates: Partial<ProductRecipe>): Promise<ProductRecipe | null> {
+  try {
+    const { data, error } = await supabase!.from("product_recipes").update(updates).eq("id", id).select().single()
+
+    if (error) {
+      console.error("Error updating product recipe:", error)
+      return null
+    }
+
+    await logActivity("update", `Updated product recipe with ID: ${id}`)
+    return data
+  } catch (error: any) {
+    console.error("Unexpected error updating product recipe:", error)
+    return null
+  }
+}
+
+export async function deleteProductRecipe(id: number): Promise<boolean> {
+  try {
+    const { error } = await supabase!.from("product_recipes").delete().eq("id", id)
+
+    if (error) {
+      console.error("Error deleting product recipe:", error)
+      return false
+    }
+
+    await logActivity("delete", `Deleted product recipe with ID: ${id}`)
+    return true
+  } catch (error: any) {
+    console.error("Unexpected error deleting product recipe:", error)
+    return false
   }
 }
 

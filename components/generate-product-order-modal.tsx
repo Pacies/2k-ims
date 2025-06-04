@@ -7,10 +7,19 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getRawMaterials, getFixedPrices, type RawMaterial, type FixedPrice } from "@/lib/database"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import {
+  getRawMaterials,
+  getFixedPrices,
+  getProductRecipes,
+  getProductRecipesByName,
+  type RawMaterial,
+  type FixedPrice,
+} from "@/lib/database"
 import { createProductOrder } from "@/lib/orders-utils"
 import { useToast } from "@/hooks/use-toast"
-import { Loader2, X } from "lucide-react"
+import { Loader2, AlertTriangle, CheckCircle, Package } from "lucide-react"
 
 interface GenerateProductOrderModalProps {
   isOpen: boolean
@@ -18,31 +27,42 @@ interface GenerateProductOrderModalProps {
   onOrderCreated: () => void
 }
 
+interface RequiredMaterial {
+  materialId: number
+  name: string
+  quantityRequired: number
+  quantityNeeded: number
+  available: number
+  unit: string
+  sufficient: boolean
+}
+
 export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCreated }: GenerateProductOrderModalProps) {
-  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([])
   const [products, setProducts] = useState<FixedPrice[]>([])
-  const [selectedMaterials, setSelectedMaterials] = useState<
-    Array<{ materialId: number; name: string; quantity: number; available: number; unit: string }>
-  >([])
+  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([])
   const [selectedProduct, setSelectedProduct] = useState<string>("")
   const [productQuantity, setProductQuantity] = useState<string>("1")
+  const [requiredMaterials, setRequiredMaterials] = useState<RequiredMaterial[]>([])
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [isSaving, setIsSaving] = useState<boolean>(false)
+  const [isCalculating, setIsCalculating] = useState<boolean>(false)
   const { toast } = useToast()
 
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true)
       try {
-        const materialsData = await getRawMaterials()
-        const productsData = await getFixedPrices("product")
-        setRawMaterials(materialsData)
+        console.log("Loading products and materials...")
+        const [productsData, materialsData] = await Promise.all([getFixedPrices("product"), getRawMaterials()])
+        console.log("Products loaded:", productsData.length)
+        console.log("Materials loaded:", materialsData.length)
         setProducts(productsData)
+        setRawMaterials(materialsData)
       } catch (error) {
         console.error("Error loading data:", error)
         toast({
           title: "Error",
-          description: "Failed to load materials and products",
+          description: "Failed to load products and materials",
           variant: "destructive",
         })
       } finally {
@@ -55,66 +75,138 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
     }
   }, [isOpen, toast])
 
-  const handleAddMaterial = (materialId: number) => {
-    const material = rawMaterials.find((m) => m.id === materialId)
-    if (!material) return
-
-    // Check if material is already selected
-    if (selectedMaterials.some((m) => m.materialId === materialId)) {
-      toast({
-        title: "Material already added",
-        description: "This material is already in your selection",
-      })
+  const calculateRequiredMaterials = async () => {
+    if (!selectedProduct || !productQuantity) {
+      console.log("Missing product or quantity")
       return
     }
 
-    setSelectedMaterials([
-      ...selectedMaterials,
-      {
-        materialId: material.id,
-        name: material.name,
-        quantity: 1,
-        available: material.quantity || 0,
-        unit: material.unit || "",
-      },
-    ])
-  }
-
-  const handleRemoveMaterial = (materialId: number) => {
-    setSelectedMaterials(selectedMaterials.filter((m) => m.materialId !== materialId))
-  }
-
-  const handleQuantityChange = (materialId: number, value: string) => {
-    const quantity = value === "" ? 0 : Number.parseInt(value) || 0
-    const material = rawMaterials.find((m) => m.id === materialId)
-    if (!material) return
-
-    if (quantity > (material.quantity || 0)) {
+    const quantity = Number.parseInt(productQuantity) || 0
+    if (quantity <= 0) {
       toast({
-        title: "Insufficient stock",
-        description: `Only ${material.quantity || 0} ${material.unit || "units"} available`,
+        title: "Invalid Quantity",
+        description: "Please enter a valid quantity greater than 0",
         variant: "destructive",
       })
       return
     }
 
-    setSelectedMaterials(selectedMaterials.map((m) => (m.materialId === materialId ? { ...m, quantity } : m)))
+    setIsCalculating(true)
+    try {
+      console.log("Calculating materials for product ID:", selectedProduct, "quantity:", quantity)
+
+      // Get the selected product details
+      const selectedProductData = products.find((p) => p.id.toString() === selectedProduct)
+      if (!selectedProductData) {
+        console.error("Selected product not found")
+        return
+      }
+
+      console.log("Selected product:", selectedProductData)
+
+      // Try to get recipes by product ID first
+      let recipes = await getProductRecipes(Number.parseInt(selectedProduct))
+      console.log("Recipes by ID:", recipes)
+
+      // If no recipes found by ID, try by product name
+      if (recipes.length === 0) {
+        console.log("No recipes found by ID, trying by name:", selectedProductData.item_name)
+        recipes = await getProductRecipesByName(selectedProductData.item_name)
+        console.log("Recipes by name:", recipes)
+      }
+
+      // If still no recipes, try with generic fallback
+      if (recipes.length === 0) {
+        console.log("No specific recipes found, trying generic...")
+        recipes = await getProductRecipes(999) // Generic recipe
+        console.log("Generic recipes:", recipes)
+      }
+
+      if (recipes.length === 0) {
+        toast({
+          title: "No Recipe Found",
+          description: `No recipe found for "${selectedProductData.item_name}". Please contact administrator to set up the product recipe.`,
+          variant: "destructive",
+        })
+        setRequiredMaterials([])
+        return
+      }
+
+      console.log("Using recipes:", recipes)
+
+      // Calculate required materials
+      const materialsNeeded: RequiredMaterial[] = recipes.map((recipe) => {
+        const material = rawMaterials.find((m) => m.id === recipe.raw_material_id)
+        const quantityNeeded = recipe.quantity_required * quantity
+        const available = material?.quantity || 0
+
+        console.log(`Material ${recipe.raw_material_name}: need ${quantityNeeded}, available ${available}`)
+
+        return {
+          materialId: recipe.raw_material_id,
+          name: recipe.raw_material_name,
+          quantityRequired: recipe.quantity_required,
+          quantityNeeded: quantityNeeded,
+          available: available,
+          unit: recipe.unit,
+          sufficient: available >= quantityNeeded,
+        }
+      })
+
+      console.log("Materials needed:", materialsNeeded)
+      setRequiredMaterials(materialsNeeded)
+
+      // Check if all materials are sufficient
+      const insufficientMaterials = materialsNeeded.filter((m) => !m.sufficient)
+      if (insufficientMaterials.length > 0) {
+        toast({
+          title: "Insufficient Materials",
+          description: `${insufficientMaterials.length} material(s) have insufficient stock. Please check the requirements below.`,
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "Materials Available",
+          description: "All required materials are available for production.",
+        })
+      }
+    } catch (error) {
+      console.error("Error calculating required materials:", error)
+      toast({
+        title: "Error",
+        description: "Failed to calculate required materials",
+        variant: "destructive",
+      })
+    } finally {
+      setIsCalculating(false)
+    }
   }
+
+  // Trigger calculation when product or quantity changes
+  useEffect(() => {
+    if (selectedProduct && productQuantity && products.length > 0 && rawMaterials.length > 0) {
+      console.log("Triggering calculation due to changes")
+      calculateRequiredMaterials()
+    } else {
+      console.log("Clearing materials - missing data")
+      setRequiredMaterials([])
+    }
+  }, [selectedProduct, productQuantity, products, rawMaterials])
 
   const handleSubmit = async () => {
-    if (selectedMaterials.length === 0) {
+    if (!selectedProduct || !productQuantity) {
       toast({
-        title: "No materials selected",
-        description: "Please select at least one material",
+        title: "Missing Information",
+        description: "Please select a product and enter quantity",
         variant: "destructive",
       })
       return
     }
 
-    if (!selectedProduct) {
+    if (requiredMaterials.length === 0) {
       toast({
-        title: "No product selected",
-        description: "Please select a product to produce",
+        title: "No Materials",
+        description: "No materials calculated for this product",
         variant: "destructive",
       })
       return
@@ -123,19 +215,19 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
     const quantity = Number.parseInt(productQuantity) || 0
     if (quantity <= 0) {
       toast({
-        title: "Invalid quantity",
+        title: "Invalid Quantity",
         description: "Product quantity must be greater than zero",
         variant: "destructive",
       })
       return
     }
 
-    // Check if any material has invalid quantity
-    const invalidMaterial = selectedMaterials.find((m) => m.quantity <= 0)
-    if (invalidMaterial) {
+    // Check if all materials are sufficient
+    const insufficientMaterials = requiredMaterials.filter((m) => !m.sufficient)
+    if (insufficientMaterials.length > 0) {
       toast({
-        title: "Invalid material quantity",
-        description: `Please enter a valid quantity for ${invalidMaterial.name}`,
+        title: "Cannot Create Order",
+        description: "Some materials have insufficient stock. Please restock before creating the order.",
         variant: "destructive",
       })
       return
@@ -150,11 +242,11 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
         productId: product.id,
         productName: product.item_name,
         quantity: quantity,
-        materials: selectedMaterials.map((m) => ({
+        materials: requiredMaterials.map((m) => ({
           materialId: m.materialId,
-          quantity: m.quantity,
+          quantity: m.quantityNeeded,
         })),
-        status: "pending",
+        status: "pending" as const,
       }
 
       await createProductOrder(orderData)
@@ -168,7 +260,7 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
       console.error("Error creating product order:", error)
       toast({
         title: "Error",
-        description: error.message || "Failed to create product order",
+        description: error instanceof Error ? error.message : "Failed to create product order",
         variant: "destructive",
       })
     } finally {
@@ -177,9 +269,9 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
   }
 
   const resetForm = () => {
-    setSelectedMaterials([])
     setSelectedProduct("")
     setProductQuantity("1")
+    setRequiredMaterials([])
   }
 
   useEffect(() => {
@@ -188,14 +280,16 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
     }
   }, [isOpen])
 
-  // Filter out materials with zero quantity
-  const availableMaterials = rawMaterials.filter((m) => (m.quantity || 0) > 0)
+  const canCreateOrder = requiredMaterials.length > 0 && requiredMaterials.every((m) => m.sufficient)
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Generate Product Order</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Package className="h-5 w-5" />
+            Generate Product Order
+          </DialogTitle>
         </DialogHeader>
 
         {isLoading ? (
@@ -203,74 +297,7 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
         ) : (
-          <div className="grid gap-6">
-            {/* Materials Selection */}
-            <div>
-              <Label className="text-base font-semibold">Select Raw Materials</Label>
-              <div className="flex items-end gap-2 mt-2">
-                <div className="flex-1">
-                  <Select onValueChange={(value) => handleAddMaterial(Number(value))}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select material" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableMaterials.map((material) => (
-                        <SelectItem key={material.id} value={material.id.toString()}>
-                          {material.name} ({material.quantity || 0} {material.unit || "units"} available)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {selectedMaterials.length > 0 && (
-                <div className="mt-4 border rounded-md">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Material</TableHead>
-                        <TableHead>Available</TableHead>
-                        <TableHead>Quantity</TableHead>
-                        <TableHead className="w-[100px]">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {selectedMaterials.map((material) => (
-                        <TableRow key={material.materialId}>
-                          <TableCell>{material.name}</TableCell>
-                          <TableCell>
-                            {material.available} {material.unit}
-                          </TableCell>
-                          <TableCell>
-                            <Input
-                              type="number"
-                              value={material.quantity === 0 ? "" : material.quantity.toString()}
-                              onChange={(e) => handleQuantityChange(material.materialId, e.target.value)}
-                              className="w-20 text-center"
-                              min="1"
-                              max={material.available}
-                              placeholder="0"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleRemoveMaterial(material.materialId)}
-                              className="h-8 w-8 text-red-500 hover:text-red-600"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </div>
-
+          <div className="space-y-6">
             {/* Product Selection */}
             <div className="grid gap-4">
               <div>
@@ -279,12 +306,12 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
                 </Label>
                 <Select value={selectedProduct} onValueChange={setSelectedProduct}>
                   <SelectTrigger id="product" className="mt-2">
-                    <SelectValue placeholder="Select product" />
+                    <SelectValue placeholder="Choose a product" />
                   </SelectTrigger>
                   <SelectContent>
                     {products.map((product) => (
                       <SelectItem key={product.id} value={product.id.toString()}>
-                        {product.item_name} - ${product.price}
+                        {product.item_name} - ₱{product.price}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -302,10 +329,102 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
                   onChange={(e) => setProductQuantity(e.target.value)}
                   min="1"
                   className="mt-2"
-                  placeholder="1"
+                  placeholder="Enter quantity"
                 />
               </div>
             </div>
+
+            {/* Required Materials */}
+            {selectedProduct && productQuantity && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Package className="h-5 w-5" />
+                    Required Materials
+                    {isCalculating && <Loader2 className="h-4 w-4 animate-spin" />}
+                  </CardTitle>
+                  <CardDescription>
+                    Materials needed to produce {productQuantity} unit(s) of the selected product
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {isCalculating ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+                      Calculating required materials...
+                    </div>
+                  ) : requiredMaterials.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">No materials calculated yet</div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="rounded-md border">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Material</TableHead>
+                              <TableHead>Required per Unit</TableHead>
+                              <TableHead>Total Needed</TableHead>
+                              <TableHead>Available</TableHead>
+                              <TableHead>Status</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {requiredMaterials.map((material) => (
+                              <TableRow key={material.materialId}>
+                                <TableCell className="font-medium">{material.name}</TableCell>
+                                <TableCell>
+                                  {material.quantityRequired} {material.unit}
+                                </TableCell>
+                                <TableCell>
+                                  {material.quantityNeeded} {material.unit}
+                                </TableCell>
+                                <TableCell>
+                                  {material.available} {material.unit}
+                                </TableCell>
+                                <TableCell>
+                                  {material.sufficient ? (
+                                    <Badge variant="default" className="bg-green-100 text-green-800">
+                                      <CheckCircle className="h-3 w-3 mr-1" />
+                                      Sufficient
+                                    </Badge>
+                                  ) : (
+                                    <Badge variant="destructive">
+                                      <AlertTriangle className="h-3 w-3 mr-1" />
+                                      Insufficient
+                                    </Badge>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      {/* Summary */}
+                      <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
+                        <div className="flex items-center gap-2">
+                          {canCreateOrder ? (
+                            <>
+                              <CheckCircle className="h-5 w-5 text-green-600" />
+                              <span className="font-medium text-green-700">
+                                All materials available - Ready to create order
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertTriangle className="h-5 w-5 text-red-600" />
+                              <span className="font-medium text-red-700">
+                                {requiredMaterials.filter((m) => !m.sufficient).length} material(s) insufficient
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 
@@ -313,7 +432,11 @@ export default function GenerateProductOrderModal({ isOpen, onClose, onOrderCrea
           <Button variant="outline" onClick={onClose} disabled={isSaving}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={isSaving || isLoading}>
+          <Button
+            onClick={handleSubmit}
+            disabled={isSaving || isLoading || !canCreateOrder}
+            className={canCreateOrder ? "bg-green-600 hover:bg-green-700" : ""}
+          >
             {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Create Product Order
           </Button>

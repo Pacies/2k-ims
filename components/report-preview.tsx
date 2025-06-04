@@ -18,6 +18,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { InventorySummaryData, LowStockData, Report } from "@/lib/reports-utils"
+import { generatePDFContent } from "@/lib/reports-utils" // Fixed import path
+import { toast } from "@/components/ui/use-toast"
+import { useState } from "react"
 
 interface ReportPreviewProps {
   report: Report | null
@@ -27,6 +30,8 @@ interface ReportPreviewProps {
 }
 
 export default function ReportPreview({ report, onExportPDF, onClose, onDelete }: ReportPreviewProps) {
+  const [isExporting, setIsExporting] = useState(false)
+
   if (!report) {
     return (
       <div className="text-center py-12">
@@ -43,6 +48,30 @@ export default function ReportPreview({ report, onExportPDF, onClose, onDelete }
       onDelete(report.id)
     } else {
       console.log("❌ ReportPreview: Cannot delete - missing onDelete or report.id")
+    }
+  }
+
+  const handleExportPDF = async () => {
+    if (!report) return
+
+    setIsExporting(true)
+    try {
+      // Use the export function directly from reports-utils
+      await generatePDFContent(report)
+
+      toast({
+        title: "Success",
+        description: "Report export opened in print dialog",
+      })
+    } catch (error) {
+      console.error("Error exporting PDF:", error)
+      toast({
+        title: "Error",
+        description: "Failed to export report",
+        variant: "destructive",
+      })
+    } finally {
+      setIsExporting(false)
     }
   }
 
@@ -402,7 +431,7 @@ export default function ReportPreview({ report, onExportPDF, onClose, onDelete }
               </p>
             </div>
             <div className="flex gap-2">
-              <Button onClick={onExportPDF} className="bg-red-600 hover:bg-red-700">
+              <Button onClick={handleExportPDF} disabled={isExporting} className="bg-red-600 hover:bg-red-700">
                 <Download className="h-4 w-4 mr-2" />
                 Export PDF
               </Button>
