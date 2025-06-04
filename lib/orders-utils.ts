@@ -1,4 +1,4 @@
-import { updateRawMaterial, updateInventoryItem, logActivity } from "@/lib/database"
+import { updateRawMaterial, updateInventoryItem, logActivity, addInventoryItem } from "@/lib/database"
 import { supabase } from "@/lib/supabaseClient"
 
 export interface Order {
@@ -24,10 +24,10 @@ export interface ProductOrder {
 
 export interface ProductOrderMaterial {
   id?: number
-  order_id?: number
+  product_order_id?: number
   material_id: number
-  material_name: string
-  quantity: number
+  material_name?: string
+  quantity_required: number
   cost_per_unit?: number
 }
 
@@ -70,6 +70,25 @@ export function generateOrders(count: number): Order[] {
   return orders
 }
 
+// Determine product category based on name
+function determineProductCategory(productName: string): "Top" | "Bottom" {
+  const lowerName = productName.toLowerCase()
+
+  // Check for bottom keywords
+  if (
+    lowerName.includes("pant") ||
+    lowerName.includes("short") ||
+    lowerName.includes("pajama") ||
+    lowerName.includes("skirt") ||
+    lowerName.includes("bottom")
+  ) {
+    return "Bottom"
+  }
+
+  // Default to Top for everything else
+  return "Top"
+}
+
 // Create a new product order
 export async function createProductOrder(orderData: CreateProductOrderData): Promise<ProductOrder | null> {
   try {
@@ -96,47 +115,31 @@ export async function createProductOrder(orderData: CreateProductOrderData): Pro
 
     console.log("Created order:", order)
 
-    // Now create the material entries
+    // Now create the material entries - only include columns that exist
     const materialEntries = []
     for (const material of orderData.materials) {
-      // Get material details for cost calculation
-      const { data: rawMaterial, error: materialError } = await supabase!
-        .from("raw_materials")
-        .select("name, cost_per_unit")
-        .eq("id", material.materialId)
-        .single()
-
-      if (materialError) {
-        console.error("Error fetching material details:", materialError)
-        // Continue with default values if material not found
-        materialEntries.push({
-          order_id: order.id,
-          material_id: material.materialId,
-          material_name: `Material ${material.materialId}`,
-          quantity: material.quantity,
-          cost_per_unit: 0,
-        })
-      } else {
-        materialEntries.push({
-          order_id: order.id,
-          material_id: material.materialId,
-          material_name: rawMaterial.name,
-          quantity: material.quantity,
-          cost_per_unit: rawMaterial.cost_per_unit || 0,
-        })
-      }
+      materialEntries.push({
+        product_order_id: order.id,
+        material_id: material.materialId,
+        quantity_required: material.quantity,
+        created_at: new Date().toISOString(),
+      })
     }
 
-    const { data: materials, error: materialsError } = await supabase!
-      .from("product_order_materials")
-      .insert(materialEntries)
-      .select()
+    // Try to insert materials
+    let materials = []
+    if (materialEntries.length > 0) {
+      const { data: materialsData, error: materialsError } = await supabase!
+        .from("product_order_materials")
+        .insert(materialEntries)
+        .select()
 
-    if (materialsError) {
-      console.error("Error creating product order materials:", materialsError)
-      // Rollback: delete the order
-      await supabase!.from("product_orders").delete().eq("id", order.id)
-      throw new Error(`Failed to create product order materials: ${materialsError.message}`)
+      if (materialsError) {
+        console.error("Error creating product order materials:", materialsError)
+        throw new Error(`Failed to create product order materials: ${materialsError.message}`)
+      } else {
+        materials = materialsData || []
+      }
     }
 
     console.log("Created materials:", materials)
@@ -176,11 +179,10 @@ export async function createProductOrder(orderData: CreateProductOrderData): Pro
       ...order,
       materials: materials.map((m: any) => ({
         id: m.id,
-        order_id: m.order_id,
+        product_order_id: m.product_order_id,
         material_id: m.material_id,
-        material_name: m.material_name,
-        quantity: m.quantity,
-        cost_per_unit: m.cost_per_unit,
+        quantity_required: m.quantity_required,
+        cost_per_unit: 0, // Default value since column might not exist
       })),
     }
 
@@ -212,22 +214,33 @@ export async function getProductOrders(): Promise<ProductOrder[]> {
     // Fetch materials for each order
     const ordersWithMaterials = await Promise.all(
       orders.map(async (order) => {
-        const { data: materials, error: materialsError } = await supabase!
-          .from("product_order_materials")
-          .select("*")
-          .eq("order_id", order.id)
+        try {
+          const { data: materials, error: materialsError } = await supabase!
+            .from("product_order_materials")
+            .select("*")
+            .eq("product_order_id", order.id)
 
-        if (materialsError) {
-          console.error(`Error fetching materials for order ${order.id}:`, materialsError)
+          if (materialsError) {
+            console.error(`Error fetching materials for order ${order.id}:`, materialsError)
+            return {
+              ...order,
+              materials: [],
+            }
+          }
+
+          return {
+            ...order,
+            materials: (materials || []).map((m: any) => ({
+              ...m,
+              cost_per_unit: m.cost_per_unit || 0, // Default if column doesn't exist
+            })),
+          }
+        } catch (error) {
+          console.error(`Exception fetching materials for order ${order.id}:`, error)
           return {
             ...order,
             materials: [],
           }
-        }
-
-        return {
-          ...order,
-          materials: materials || [],
         }
       }),
     )
@@ -251,22 +264,31 @@ export async function getProductOrderById(id: number): Promise<ProductOrder | nu
 
     if (!order) return null
 
-    const { data: materials, error: materialsError } = await supabase!
-      .from("product_order_materials")
-      .select("*")
-      .eq("order_id", order.id)
+    // Try to fetch materials with better error handling
+    let materials = []
+    try {
+      const { data: materialsData, error: materialsError } = await supabase!
+        .from("product_order_materials")
+        .select("*")
+        .eq("product_order_id", id)
 
-    if (materialsError) {
-      console.error(`Error fetching materials for order ${order.id}:`, materialsError)
-      return {
-        ...order,
-        materials: [],
+      if (materialsError) {
+        console.error(`Error fetching materials for order ${id}:`, materialsError)
+        // Continue with empty materials array
+      } else {
+        materials = (materialsData || []).map((m: any) => ({
+          ...m,
+          cost_per_unit: m.cost_per_unit || 0, // Default if column doesn't exist
+        }))
       }
+    } catch (materialsFetchError) {
+      console.error(`Exception fetching materials for order ${id}:`, materialsFetchError)
+      // Continue with empty materials array
     }
 
     return {
       ...order,
-      materials: materials || [],
+      materials: materials,
     }
   } catch (error: any) {
     console.error("Error fetching product order:", error)
@@ -301,21 +323,36 @@ export async function updateProductOrderStatus(
       return null
     }
 
-    // If completed, move to history and update inventory
+    // If completed, update inventory and move to history
     if (status === "completed") {
-      await moveOrderToHistory(orderId)
+      // First update inventory
       await updateInventoryForCompletedOrder(order)
+
+      // Then move to history
+      await moveOrderToHistory(orderId, order)
     }
 
     // Log activity
     await logActivity("update", `Updated product order #${orderId} status to ${status}`)
 
     // Fetch materials
-    const { data: materials } = await supabase!.from("product_order_materials").select("*").eq("order_id", orderId)
+    let materials = []
+    try {
+      const { data: materialsData } = await supabase!
+        .from("product_order_materials")
+        .select("*")
+        .eq("product_order_id", orderId)
+      materials = (materialsData || []).map((m: any) => ({
+        ...m,
+        cost_per_unit: m.cost_per_unit || 0, // Default if column doesn't exist
+      }))
+    } catch (error) {
+      console.error("Error fetching materials after status update:", error)
+    }
 
     return {
       ...order,
-      materials: materials || [],
+      materials: materials,
     }
   } catch (error: any) {
     console.error("Error in updateProductOrderStatus:", error)
@@ -324,45 +361,66 @@ export async function updateProductOrderStatus(
 }
 
 // Move completed order to history
-async function moveOrderToHistory(orderId: number): Promise<void> {
+async function moveOrderToHistory(orderId: number, orderData?: any): Promise<void> {
   try {
-    // Get the order data
-    const { data: order, error: fetchError } = await supabase!
-      .from("product_orders")
-      .select("*")
-      .eq("id", orderId)
-      .single()
+    // Get the order data if not provided
+    let order = orderData
+    if (!order) {
+      const { data: fetchedOrder, error: fetchError } = await supabase!
+        .from("product_orders")
+        .select("*")
+        .eq("id", orderId)
+        .single()
 
-    if (fetchError || !order) {
-      console.error("Error fetching order for history:", fetchError)
-      return
+      if (fetchError || !fetchedOrder) {
+        console.error("Error fetching order for history:", fetchError)
+        return
+      }
+      order = fetchedOrder
     }
 
-    // Insert into history
-    const { error: historyError } = await supabase!.from("product_order_history").insert({
+    console.log("Moving order to history:", order)
+
+    // Insert into history with only the basic required columns
+    const historyData = {
       original_order_id: order.id,
-      product_id: order.product_id,
       product_name: order.product_name,
       quantity: order.quantity,
       status: order.status,
-      created_at: order.created_at,
-      updated_at: order.updated_at,
-      completed_at: order.completed_at,
-    })
+      completed_at: order.completed_at || new Date().toISOString(),
+    }
+
+    // Add optional columns only if they exist in the source order
+    if (order.product_id) {
+      historyData.product_id = order.product_id
+    }
+
+    console.log("Inserting history data:", historyData)
+
+    const { data: historyResult, error: historyError } = await supabase!
+      .from("product_order_history")
+      .insert(historyData)
+      .select()
 
     if (historyError) {
       console.error("Error moving order to history:", historyError)
-      return
+      throw new Error(`Failed to move order to history: ${historyError.message}`)
     }
+
+    console.log("Successfully moved to history:", historyResult)
 
     // Delete from active orders
     const { error: deleteError } = await supabase!.from("product_orders").delete().eq("id", orderId)
 
     if (deleteError) {
       console.error("Error deleting completed order:", deleteError)
+      throw new Error(`Failed to delete completed order: ${deleteError.message}`)
     }
+
+    console.log("Successfully deleted from active orders")
   } catch (error: any) {
     console.error("Error in moveOrderToHistory:", error)
+    throw error
   }
 }
 
@@ -388,8 +446,45 @@ async function updateInventoryForCompletedOrder(order: any): Promise<void> {
       await updateInventoryItem(inventoryItem.id, { stock: newStock })
       console.log(`Updated inventory for ${order.product_name}: +${order.quantity} (total: ${newStock})`)
     } else {
-      // Product doesn't exist in inventory, you might want to create it
-      console.log(`Product ${order.product_name} not found in inventory - completed order recorded in history`)
+      // Product doesn't exist in inventory, create it
+      console.log(`Product ${order.product_name} not found in inventory - creating new inventory item`)
+
+      // Get product price from fixed_prices table
+      let productPrice = 0
+      try {
+        const { data: fixedPrice, error: priceError } = await supabase!
+          .from("fixed_prices")
+          .select("price")
+          .eq("item_name", order.product_name)
+          .eq("item_type", "product")
+          .single()
+
+        if (!priceError && fixedPrice) {
+          productPrice = fixedPrice.price
+        }
+      } catch (priceError) {
+        console.warn("Could not fetch product price, using default:", priceError)
+      }
+
+      // Determine category based on product name (Top or Bottom)
+      const category = determineProductCategory(order.product_name)
+
+      // Create new inventory item
+      const newInventoryItem = {
+        name: order.product_name,
+        category: category,
+        price: productPrice,
+        stock: order.quantity,
+      }
+
+      const createdItem = await addInventoryItem(newInventoryItem)
+      if (createdItem) {
+        console.log(
+          `Created new inventory item for ${order.product_name} with ${order.quantity} units in category ${category}`,
+        )
+      } else {
+        console.error(`Failed to create inventory item for ${order.product_name}`)
+      }
     }
   } catch (error: any) {
     console.error("Error updating inventory for completed order:", error)
@@ -400,11 +495,18 @@ async function updateInventoryForCompletedOrder(order: any): Promise<void> {
 export async function deleteProductOrder(orderId: number): Promise<boolean> {
   try {
     // First delete materials
-    const { error: materialsError } = await supabase!.from("product_order_materials").delete().eq("order_id", orderId)
-
-    if (materialsError) {
-      console.error("Error deleting product order materials:", materialsError)
-      return false
+    try {
+      const { error: materialsError } = await supabase!
+        .from("product_order_materials")
+        .delete()
+        .eq("product_order_id", orderId)
+      if (materialsError) {
+        console.error("Error deleting product order materials:", materialsError)
+        // Continue anyway
+      }
+    } catch (error) {
+      console.error("Exception deleting materials:", error)
+      // Continue anyway
     }
 
     // Then delete the order
@@ -419,6 +521,24 @@ export async function deleteProductOrder(orderId: number): Promise<boolean> {
     return true
   } catch (error: any) {
     console.error("Error in deleteProductOrder:", error)
+    return false
+  }
+}
+
+// Delete product order from history
+export async function deleteProductOrderHistory(historyId: number): Promise<boolean> {
+  try {
+    const { error: deleteError } = await supabase!.from("product_order_history").delete().eq("id", historyId)
+
+    if (deleteError) {
+      console.error("Error deleting product order history:", deleteError)
+      return false
+    }
+
+    await logActivity("delete", `Deleted product order history #${historyId}`)
+    return true
+  } catch (error: any) {
+    console.error("Error in deleteProductOrderHistory:", error)
     return false
   }
 }
@@ -453,37 +573,50 @@ export async function updateProductOrder(
     // Update materials if provided
     if (updates.materials) {
       // Delete existing materials
-      await supabase!.from("product_order_materials").delete().eq("order_id", orderId)
+      try {
+        await supabase!.from("product_order_materials").delete().eq("product_order_id", orderId)
+      } catch (error) {
+        console.error("Error deleting existing materials:", error)
+      }
 
-      // Insert new materials
+      // Insert new materials - only include columns that exist
       const materialEntries = []
       for (const material of updates.materials) {
-        const { data: rawMaterial } = await supabase!
-          .from("raw_materials")
-          .select("name, cost_per_unit")
-          .eq("id", material.materialId)
-          .single()
-
         materialEntries.push({
-          order_id: orderId,
+          product_order_id: orderId,
           material_id: material.materialId,
-          material_name: rawMaterial?.name || `Material ${material.materialId}`,
-          quantity: material.quantity,
-          cost_per_unit: rawMaterial?.cost_per_unit || 0,
+          quantity_required: material.quantity,
+          created_at: new Date().toISOString(),
         })
       }
 
-      await supabase!.from("product_order_materials").insert(materialEntries)
+      try {
+        await supabase!.from("product_order_materials").insert(materialEntries)
+      } catch (error) {
+        console.error("Error inserting new materials:", error)
+      }
     }
 
     // Fetch updated materials
-    const { data: materials } = await supabase!.from("product_order_materials").select("*").eq("order_id", orderId)
+    let materials = []
+    try {
+      const { data: materialsData } = await supabase!
+        .from("product_order_materials")
+        .select("*")
+        .eq("product_order_id", orderId)
+      materials = (materialsData || []).map((m: any) => ({
+        ...m,
+        cost_per_unit: m.cost_per_unit || 0, // Default if column doesn't exist
+      }))
+    } catch (error) {
+      console.error("Error fetching updated materials:", error)
+    }
 
     await logActivity("update", `Updated product order #${orderId}`)
 
     return {
       ...order,
-      materials: materials || [],
+      materials: materials,
     }
   } catch (error: any) {
     console.error("Error in updateProductOrder:", error)

@@ -18,6 +18,7 @@ import {
   getProductOrderById,
   updateProductOrderStatus,
   deleteProductOrder,
+  deleteProductOrderHistory,
   getProductOrderHistory,
 } from "@/lib/orders-utils"
 import { getRawMaterials } from "@/lib/database"
@@ -37,8 +38,10 @@ export default function WorkOrdersPage() {
   const [isViewModalOpen, setIsViewModalOpen] = useState(false)
   const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false)
   const [isConfirmCompleteOpen, setIsConfirmCompleteOpen] = useState(false)
+  const [isConfirmDeleteHistoryOpen, setIsConfirmDeleteHistoryOpen] = useState(false)
   const [orderToDelete, setOrderToDelete] = useState(null)
   const [orderToComplete, setOrderToComplete] = useState(null)
+  const [historyToDelete, setHistoryToDelete] = useState(null)
   const { toast } = useToast()
   const router = useRouter()
 
@@ -48,6 +51,7 @@ export default function WorkOrdersPage() {
       const orders = await getProductOrders()
       const history = await getProductOrderHistory()
       const materials = await getRawMaterials()
+      console.log("Loaded orders:", orders) // Add this debug line
       setProductOrders(orders)
       setProductOrderHistory(history)
       setRawMaterials(materials)
@@ -73,8 +77,8 @@ export default function WorkOrdersPage() {
     if (searchTerm) {
       filtered = filtered.filter(
         (order) =>
-          order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          order.productName.toLowerCase().includes(searchTerm.toLowerCase()),
+          order.id.toString().toLowerCase().includes(searchTerm.toLowerCase()) ||
+          order.product_name.toLowerCase().includes(searchTerm.toLowerCase()),
       )
     }
 
@@ -83,7 +87,7 @@ export default function WorkOrdersPage() {
     }
 
     // Sort by created date (newest first)
-    filtered = [...filtered].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    filtered = [...filtered].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
     setFilteredOrders(filtered)
   }, [productOrders, searchTerm, statusFilter])
@@ -94,20 +98,35 @@ export default function WorkOrdersPage() {
     if (historySearchTerm) {
       filtered = filtered.filter(
         (order) =>
-          order.id.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-          order.productName.toLowerCase().includes(historySearchTerm.toLowerCase()),
+          order.id.toString().toLowerCase().includes(historySearchTerm.toLowerCase()) ||
+          order.product_name.toLowerCase().includes(historySearchTerm.toLowerCase()),
       )
     }
 
     // Sort by completed date (newest first)
-    filtered = [...filtered].sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
+    filtered = [...filtered].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime())
 
     setFilteredHistory(filtered)
   }, [productOrderHistory, historySearchTerm])
 
   const handleViewOrder = async (orderId) => {
     try {
-      const order = await getProductOrderById(orderId)
+      // Extract numeric ID if it's in the format "PO-XXXX"
+      const numericId =
+        typeof orderId === "string" && orderId.startsWith("PO-")
+          ? Number.parseInt(orderId.replace("PO-", ""), 10)
+          : orderId
+
+      const order = await getProductOrderById(numericId)
+      if (!order) {
+        toast({
+          title: "Error",
+          description: "Order not found",
+          variant: "destructive",
+        })
+        return
+      }
+
       setSelectedOrder(order)
       setIsViewModalOpen(true)
     } catch (error) {
@@ -149,6 +168,38 @@ export default function WorkOrdersPage() {
       })
       setIsConfirmDeleteOpen(false)
       setOrderToDelete(null)
+    }
+  }
+
+  const handleDeleteHistory = async () => {
+    if (!historyToDelete) return
+
+    try {
+      const success = await deleteProductOrderHistory(historyToDelete)
+      if (success) {
+        toast({
+          title: "Success",
+          description: "Order history deleted successfully",
+        })
+        loadProductOrders()
+      } else {
+        toast({
+          title: "Error",
+          description: "Failed to delete order history",
+          variant: "destructive",
+        })
+      }
+      setIsConfirmDeleteHistoryOpen(false)
+      setHistoryToDelete(null)
+    } catch (error) {
+      console.error("Error deleting order history:", error)
+      toast({
+        title: "Error",
+        description: "Failed to delete order history",
+        variant: "destructive",
+      })
+      setIsConfirmDeleteHistoryOpen(false)
+      setHistoryToDelete(null)
     }
   }
 
@@ -312,10 +363,10 @@ export default function WorkOrdersPage() {
                         filteredOrders.map((order) => (
                           <TableRow key={order.id} className="cursor-pointer hover:bg-gray-50">
                             <TableCell className="font-mono text-sm">{order.id}</TableCell>
-                            <TableCell>{order.productName}</TableCell>
+                            <TableCell>{order.product_name}</TableCell>
                             <TableCell>{order.quantity}</TableCell>
                             <TableCell>{getStatusBadge(order.status)}</TableCell>
-                            <TableCell>{new Date(order.createdAt).toLocaleDateString()}</TableCell>
+                            <TableCell>{new Date(order.created_at).toLocaleDateString()}</TableCell>
                             <TableCell>
                               <div className="flex gap-2">
                                 <Button variant="ghost" size="icon" onClick={() => handleViewOrder(order.id)}>
@@ -398,14 +449,31 @@ export default function WorkOrdersPage() {
                       ) : (
                         filteredHistory.map((order) => (
                           <TableRow key={order.id} className="cursor-pointer hover:bg-gray-50">
-                            <TableCell className="font-mono text-sm">{order.id}</TableCell>
-                            <TableCell>{order.productName}</TableCell>
+                            <TableCell className="font-mono text-sm">{order.original_order_id}</TableCell>
+                            <TableCell>{order.product_name}</TableCell>
                             <TableCell>{order.quantity}</TableCell>
-                            <TableCell>{new Date(order.completedAt).toLocaleDateString()}</TableCell>
+                            <TableCell>{new Date(order.completed_at).toLocaleDateString()}</TableCell>
                             <TableCell>
-                              <Button variant="ghost" size="icon" onClick={() => handleViewOrder(order.id)}>
-                                <Eye className="h-4 w-4" />
-                              </Button>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleViewOrder(order.original_order_id)}
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-red-600 hover:text-red-700"
+                                  onClick={() => {
+                                    setHistoryToDelete(order.id)
+                                    setIsConfirmDeleteHistoryOpen(true)
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         ))
@@ -436,7 +504,7 @@ export default function WorkOrdersPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <h3 className="font-semibold">Product</h3>
-                    <p>{selectedOrder.productName}</p>
+                    <p>{selectedOrder.product_name}</p>
                   </div>
                   <div>
                     <h3 className="font-semibold">Quantity</h3>
@@ -450,7 +518,7 @@ export default function WorkOrdersPage() {
                     <h3 className="font-semibold">{selectedOrder.status === "completed" ? "Completed" : "Created"}</h3>
                     <p>
                       {new Date(
-                        selectedOrder.status === "completed" ? selectedOrder.completedAt : selectedOrder.createdAt,
+                        selectedOrder.status === "completed" ? selectedOrder.completed_at : selectedOrder.created_at,
                       ).toLocaleDateString()}
                     </p>
                   </div>
@@ -458,24 +526,28 @@ export default function WorkOrdersPage() {
 
                 <div>
                   <h3 className="font-semibold mb-2">Materials Used</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Material ID</TableHead>
-                        <TableHead>Material Name</TableHead>
-                        <TableHead>Quantity</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {selectedOrder.materials.map((material, index) => (
-                        <TableRow key={index}>
-                          <TableCell>{material.materialId}</TableCell>
-                          <TableCell>{getMaterialName(material.materialId)}</TableCell>
-                          <TableCell>{material.quantity}</TableCell>
+                  {selectedOrder.materials && selectedOrder.materials.length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Material ID</TableHead>
+                          <TableHead>Material Name</TableHead>
+                          <TableHead>Quantity</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedOrder.materials.map((material, index) => (
+                          <TableRow key={index}>
+                            <TableCell>{material.material_id}</TableCell>
+                            <TableCell>{getMaterialName(material.material_id)}</TableCell>
+                            <TableCell>{material.quantity_required}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <p className="text-muted-foreground">No materials data available for this order.</p>
+                  )}
                 </div>
               </div>
               <DialogFooter>
@@ -499,6 +571,24 @@ export default function WorkOrdersPage() {
                 Cancel
               </Button>
               <Button variant="destructive" onClick={handleDeleteOrder}>
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Confirm Delete History Modal */}
+        <Dialog open={isConfirmDeleteHistoryOpen} onOpenChange={setIsConfirmDeleteHistoryOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Confirm History Deletion</DialogTitle>
+            </DialogHeader>
+            <p>Are you sure you want to delete this order history? This action cannot be undone.</p>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsConfirmDeleteHistoryOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={handleDeleteHistory}>
                 Delete
               </Button>
             </DialogFooter>
